@@ -1,0 +1,28 @@
+# Changes here will be overwritten by Copier
+SelectCodeQualityFeatures:
+- AddLocalTests_flag
+- SelectGitHubActions_flag
+SelectCommunityFeatures: []
+SelectDatabasesFeatures:
+- AddSQLite_flag
+- AddPostgres_flag
+- AddSQLAlchemy_flag
+SelectDocumentationFeatures: []
+SelectGitHubActions:
+- AddGitHubActionBuild_flag
+- LimitTestMatrix_flag
+SelectPublishReleaseFeatures:
+- AddPyPI_flag
+_commit: b75a140
+_src_path: git+https://github.com/wschuell/python-template
+copyright_holder: William Schueller
+email: william.schueller@gmail.com
+full_name: William Schueller
+github_organization: wschuell
+keywords: arzneimittel,austria,pharmacy,medical
+license: GNUv3
+package_name: oeamdb
+package_short_description: Gathering official pharmaceutical products list for Austrai,
+    enriched with relevant data.
+template_profile: ask
+version: 0.1.0

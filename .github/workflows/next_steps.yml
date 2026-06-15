@@ -1,0 +1,10 @@
+on: [push]
+permissions:
+  contents: write
+  issues: write
+name: Create GitHub issues
+jobs:
+  next_steps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
