@@ -67,3 +67,6 @@ venv.bak/
 *.swp
 *.swo
 *.orig
+
+
+**/.pymon

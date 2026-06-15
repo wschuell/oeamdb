@@ -26,6 +26,7 @@ dependencies = [
     "psycopg",
     "asyncpg",
     "sqlalchemy",
+    "playwright",
 ]
 description = "Gathering official pharmaceutical products list for Austrai, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]

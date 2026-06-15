@@ -1,6 +1,7 @@
 
 import sqlite3
-
+from pathlib import Path
+import os
 
 from sqlalchemy import (
     create_engine,
@@ -70,6 +71,7 @@ class Oeamdb:
         self,
         engine_url="sqlite:///oeamdb.db",
         engine=None,
+        data_folder=None,
         **kwargs,
     ):
         self.engine_url = engine_url
@@ -78,6 +80,20 @@ class Oeamdb:
         else:
             self.init_engine()
         self.sql_base.metadata.create_all(self.engine,checkfirst=True)
+
+        if data_folder is None:
+            self.data_folder = Path.home() / ".oeamdb_data"
+        else:
+            self.data_folder = Path(data_folder)
+
+
+    def download_basg(self,force=False):
+        if not self.data_folder.exists():
+            os.makedirs(self.data_folder)
+        if force or not (self.data_folder / "basg.json").exists():
+            pass
+        if force or not (self.data_folder / "basg.csv").exists():
+            pass
 
     def init_engine(self )-> None:
         """Initiating the SQLAlchemy engine if not existing."""
@@ -96,3 +112,10 @@ class Oeamdb:
     def drop_all(self)-> None:
         """Clean slate for the database."""
         self.sql_base.metadata.drop_all(self.engine)
+
+    def import_all(self):
+        self.download_basg()
+        self.import_basg()
+
+    def import_basg(self):
+        pass
