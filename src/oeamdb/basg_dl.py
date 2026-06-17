@@ -12,19 +12,26 @@ from playwright.sync_api import sync_playwright
 
 class BasgDownloader:
     def __init__(self,
+        browser_type="firefox",
         page_url="https://medikamente.basg.gv.at/de/medicinal-products",
         api_url = "https://medikamente.basg.gv.at/api/api/v1/medication/search",
         page_size = 10_000,
-        timeout_ms = 3_000,
+        short_timeout_ms = 5_000,
+        long_timeout_ms = 45_000,
         data_folder=Path("./basg_download"),
         filename="basg",
+        headless_mode=False,
+        # headless_mode=True,
         ):
         self.page_url = page_url
         self.api_url = api_url
         self.page_size = page_size
-        self.timeout_ms = timeout_ms
+        self.short_timeout_ms = short_timeout_ms
+        self.long_timeout_ms = long_timeout_ms
         self.data_folder = Path(data_folder)
         self.filename = filename
+        self.browser_type = browser_type
+        self.headless_mode = headless_mode
 
     def download(self,csv_dl=True,json_dl=True, force=False):
 
@@ -36,20 +43,20 @@ class BasgDownloader:
 
         if not csv_dl_needed and not json_dl_needed:
             return
-        
+
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = getattr(p,self.browser_type).launch(headless=self.headless_mode)
             context = browser.new_context()
             page = context.new_page()
 
 
 
-            page.goto(self.page_url, wait_until="networkidle", timeout=self.timeout_ms)
+            page.goto(self.page_url, wait_until="networkidle", timeout=self.short_timeout_ms)
 
             with page.expect_request(
                 lambda r: "medication/search" in r.url and r.method == "POST",
-                timeout=self.timeout_ms) as req_info:
+                timeout=self.short_timeout_ms) as req_info:
                 page.get_by_role("button", name="Suche", exact=True).click()
 
             req = req_info.value
@@ -58,7 +65,7 @@ class BasgDownloader:
             auth = req.headers.get("authorization")
 
             self.data_folder.mkdir(parents=True, exist_ok=True)
-            
+
             if json_dl_needed:
                 rows = self.fetch_all_pages(context=context, body=body, auth=auth)
                 rows_en = self.fetch_all_pages(context=context, body=body, auth=auth, lang="EN")
@@ -67,21 +74,19 @@ class BasgDownloader:
                     f.write(json.dumps(json_data, indent=4))
 
             if csv_dl_needed:
-                page.get_by_role("button", name="Download button", exact=True).click()  # adjust name
-                page.wait_for_timeout(self.timeout_ms)
-                with page.expect_download(timeout=3*self.timeout_ms) as dl_info:
+                page.get_by_role("button", name="Download button", exact=True).click()
+                page.wait_for_timeout(self.short_timeout_ms)
+                with page.expect_download(timeout=self.long_timeout_ms) as dl_info:
                     page.get_by_role("menuitem", name="Export als .csv").click()
                 download = dl_info.value
                 download.save_as(csv_path)
-    
+
             browser.close()
 
 
 
 
     def fetch_all_pages(self, context, body, auth, lang="DE") -> list[dict]:
-        """Iterate search?page=N&size=100 until exhausted. Uses the browser
-        context's cookies (JSESSIONID) automatically."""
         rows: list[dict] = []
         page_n = 1
         while True:
@@ -94,7 +99,7 @@ class BasgDownloader:
                     "Accept": "application/json",
                     "Accept-Language": lang,
                 },
-                timeout=self.timeout_ms,
+                timeout=self.short_timeout_ms,
                 )
             if not resp.ok:
                 raise RuntimeError(f"page {page_n}: HTTP {resp.status} {resp.text()[:200]}")

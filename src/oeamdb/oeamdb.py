@@ -9,7 +9,7 @@ from sqlalchemy import (
 )
 from .sql_model import Base
 
-
+from .basg_dl import BasgDownloader
 
 
 
@@ -88,12 +88,14 @@ class Oeamdb:
 
 
     def download_basg(self,force=False):
-        if not self.data_folder.exists():
-            os.makedirs(self.data_folder)
-        if force or not (self.data_folder / "basg.json").exists():
-            pass
-        if force or not (self.data_folder / "basg.csv").exists():
-            pass
+        # if not self.data_folder.exists():
+        #     os.makedirs(self.data_folder)
+        # if force or not (self.data_folder / "basg.json").exists():
+        #     pass
+        # if force or not (self.data_folder / "basg.csv").exists():
+        #     pass
+        bdl = BasgDownloader(data_folder=self.data_folder)
+        bdl.download(force=force)
 
     def init_engine(self )-> None:
         """Initiating the SQLAlchemy engine if not existing."""
