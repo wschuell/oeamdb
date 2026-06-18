@@ -28,3 +28,9 @@ def test_import(testengine):
         engine=testengine,
         )
     db.import_all()
+
+def test_reimport(testengine):
+    db = oeamdb.Oeamdb(
+        engine=testengine,
+        )
+    db.import_all()

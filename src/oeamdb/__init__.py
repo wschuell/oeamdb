@@ -12,7 +12,7 @@ __version__ = "0.1.0"
 
 _LAZY_IMPORTS = {
 	"Oeamdb":"oeamdb",
-	"BasgDownloader":"basg_dl",
+	"BasgDownloader":"downloaders",
 }
 
 

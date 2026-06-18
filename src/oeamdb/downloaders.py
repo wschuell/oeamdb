@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from pathlib import Path
 import time
 import csv
@@ -20,8 +18,7 @@ class BasgDownloader:
         long_timeout_ms = 45_000,
         data_folder=Path("./basg_download"),
         filename="basg",
-        headless_mode=False,
-        # headless_mode=True,
+        headless_mode=True,
         ):
         self.page_url = page_url
         self.api_url = api_url
@@ -69,9 +66,11 @@ class BasgDownloader:
             if json_dl_needed:
                 rows = self.fetch_all_pages(context=context, body=body, auth=auth)
                 rows_en = self.fetch_all_pages(context=context, body=body, auth=auth, lang="EN")
-                json_data = {"DE":rows,"EN":rows_en}
+                substances_en = {d['id']:d['substances'] for d in rows_en}
+                for r in rows:
+                    r['substances_en'] = substances_en.get(r['id'],None)
                 with open(json_path,'w') as f:
-                    f.write(json.dumps(json_data, indent=4))
+                    f.write(json.dumps(rows, indent=4))
 
             if csv_dl_needed:
                 page.get_by_role("button", name="Download button", exact=True).click()
