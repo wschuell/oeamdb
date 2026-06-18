@@ -28,7 +28,7 @@ dependencies = [
     "sqlalchemy",
     "playwright",
 ]
-description = "Gathering official pharmaceutical products list for Austrai, enriched with relevant data."
+description = "Gathering official pharmaceutical products list for Austria, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]
 license = {file = "LICENSE"}
 name = "oeamdb"
