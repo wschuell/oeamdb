@@ -28,6 +28,8 @@ from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 
 import logging
+import pubchempy as pcp
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,20 @@ def match_lists(en, de, product_key):
     pairs = []
     enc = copy.deepcopy(en)
     dec = copy.deepcopy(de)
+    same = set(en) & set(dec)
+    for e in same:
+        pairs.append(
+                {
+                    "name_en": e,
+                    "name_de": e,
+                    "product_key": product_key,
+                }
+            )
+        enc.remove(e)
+        dec.remove(e)
+        n -= 1
+        m -= 1
+
     while n < m:
         _, d = max([(min([(levenshtein(d, e), e) for e in enc]), d) for d in dec])
         enc.append(d)
@@ -196,6 +212,7 @@ class Oeamdb:
         chembl_engine=None,
         max_geoloc_queries=None,
         geolocator=None,
+        max_pubchem_queries=None,
     ):
         self.engine_url = engine_url
         if engine is not None:
@@ -221,6 +238,7 @@ class Oeamdb:
         else:
             self.locator = geolocator
         self.geocode = RateLimiter(self.locator.geocode, min_delay_seconds=1.5)
+        self.max_pubchem_queries = max_pubchem_queries
 
     def download_basg(self, force=False):
         bdl = BasgDownloader(data_folder=self.data_folder)
@@ -358,9 +376,11 @@ class Oeamdb:
                 query="""
                     INSERT INTO substance(name_de,name_en)
                     SELECT UPPER(CAST(:name_de AS TEXT)),UPPER(CAST(:name_en AS TEXT))
-                    WHERE NOT EXISTS (
+                    FROM product p
+                    WHERE p.product_key=:product_key
+                    AND NOT EXISTS (
                         SELECT 1 FROM substance
-                        WHERE name_de=UPPER(:name_de)
+                        WHERE name_en=UPPER(:name_en)
                         )
                     ;""",
                 param_processor=subst_processor,
@@ -432,6 +452,8 @@ class Oeamdb:
             product_key = data["Zulassungsnummer"]
             target_usage = data["Verwendung"]
             if data["ATC Code"] is None:
+                ans = []
+            elif self.filter_vet and not target_usage == "Human":
                 ans = []
             else:
                 ans = [
@@ -534,24 +556,12 @@ class Oeamdb:
                 "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
             )
         with self.chembl_engine.connect() as chembl_conn:
-            molsyn_query = chembl_conn.execute(
-                text(
-                    """
-                SELECT
-                    molregno,
-                    syn_type,
-                    molsyn_id,
-                    synonyms
-                FROM molecule_synonyms ms
-                """
-                )
-            )
-            molsyns = [m._mapping for m in molsyn_query]
             molecules_query = chembl_conn.execute(
                 text(
                     """
                 SELECT
                     md.pref_name,
+                    ms.synonyms,
                     md.molregno,
                     md.chembl_id,
                     cs.canonical_smiles,
@@ -560,9 +570,12 @@ class Oeamdb:
                     md.molecule_type,
                     md.structure_type
                 FROM molecule_dictionary md
+                LEFT OUTER JOIN molecule_synonyms ms
+                    ON md.molregno=ms.molregno
                 LEFT OUTER JOIN compound_structures cs
                     ON cs.molregno=md.molregno
                 WHERE md.pref_name is not NULL
+                ORDER BY md.molregno
                 """
                 )
             )
@@ -571,19 +584,7 @@ class Oeamdb:
             conn.execute(
                 text(
                     """
-                            CREATE TABLE IF NOT EXISTS chembl_mol_syns(
-                                molsyn_id INTEGER PRIMARY KEY,
-                                mol_regno INTEGER,
-                                syn_type TEXT,
-                                synonym TEXT
-                                );
-                            """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                            CREATE TABLE IF NOT EXISTS chembl_mols(
+                            CREATE TEMP TABLE IF NOT EXISTS chembl_mols(
                                 name TEXT PRIMARY KEY,
                                 mol_regno INTEGER,
                                 chembl_id TEXT,
@@ -596,25 +597,17 @@ class Oeamdb:
                             """
                 )
             )
-            conn.execute(
-                text(
-                    """
-                            INSERT INTO chembl_mol_syns(
-                                molsyn_id,
-                                mol_regno,
-                                syn_type,
-                                synonym
-                                )
-                            VALUES(:molsyn_id
-                                ,:molregno,
-                                :syn_type,
-                                UPPER(:synonyms))
-                            ON CONFLICT DO NOTHING
-                            ;
-                            """
-                ),
-                molecules,
-            )
+            def split_synonyms(mol_dict_list):
+                previous_molreg = None
+                for m in mol_dict_list:
+                    if m["molregno"] is None or m["molregno"] != previous_molreg:
+                        yield m
+                        previous_molreg = m["molregno"]
+                    if m["synonyms"] is not None:
+                        md = dict(m)
+                        md["pref_name"] = m["synonyms"]
+                        yield md
+
             conn.execute(
                 text(
                     """
@@ -640,7 +633,7 @@ class Oeamdb:
                             ;
                             """
                 ),
-                molecules,
+                list(split_synonyms(molecules)),
             )
             conn.commit()
 
@@ -650,58 +643,229 @@ class Oeamdb:
                 "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
             )
         with self.chembl_engine.connect() as chembl_conn:
-            molecules_query = chembl_conn.execute(
+            atc_query = chembl_conn.execute(
                 text(
                     """
                 SELECT
-                    md.pref_name,
-                    md.molregno,
-                    md.chembl_id,
-                    cs.canonical_smiles,
-                    cs.standard_inchi,
-                    cs.standard_inchi_key
-                FROM molecule_dictionary md 
-                LEFT OUTER JOIN compound_structures cs
-                    ON cs.molregno=md.molregno
-                WHERE md.pref_name is not NULL
+                    who_name,
+                    level1,
+                    level1_description,
+                    level2,
+                    level2_description,
+                    level3,
+                    level3_description,
+                    level4,
+                    level4_description,
+                    level5
+                FROM atc_classification
                 """
                 )
             )
-            molecules = [m._mapping for m in molecules_query]
+            atc_codes = [a._mapping for a in atc_query]
         with self.engine.connect() as conn:
             conn.execute(
                 text(
                     """
-                            CREATE TABLE IF NOT EXISTS chembl_mols(
-                                name TEXT PRIMARY KEY,
-                                mol_regno INTEGER,
-                                chembl_id TEXT,
-                                canonical_smiles TEXT,
-                                standard_inchi TEXT,
-                                standard_inchi_key TEXT
-                                );
+                            INSERT INTO atc_code(
+                    atc_code,
+                    who_name,
+                    level1,
+                    level1_description,
+                    level2,
+                    level2_description,
+                    level3,
+                    level3_description,
+                    level4,
+                    level4_description,
+                    level5
+                                )
+                            VALUES(
+                    :level5,
+                    :who_name,
+                    :level1,
+                    :level1_description,
+                    :level2,
+                    :level2_description,
+                    :level3,
+                    :level3_description,
+                    :level4,
+                    :level4_description,
+                    :level5)
+                            ON CONFLICT(atc_code) DO UPDATE SET
+                    who_name=EXCLUDED.who_name,
+                    level1=EXCLUDED.level1,
+                    level1_description=EXCLUDED.level1_description,
+                    level2=EXCLUDED.level2,
+                    level2_description=EXCLUDED.level2_description,
+                    level3=EXCLUDED.level3,
+                    level3_description=EXCLUDED.level3_description,
+                    level4=EXCLUDED.level4,
+                    level4_description=EXCLUDED.level4_description,
+                    level5=EXCLUDED.level5
+                            ;
                             """
-                )
+                ),
+                atc_codes,
+            )
+            conn.commit()
+            conn.execute(
+                text(
+                    """
+                            INSERT INTO atc_code(
+                    atc_code,
+                    who_name,
+                    level1,
+                    level1_description,
+                    level2,
+                    level2_description,
+                    level3,
+                    level3_description,
+                    level4,
+                    level4_description
+                                )
+                           SELECT
+                    ac.level4,
+                    ac.level4_description,
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level2,
+                    ac.level2_description,
+                    ac.level3,
+                    ac.level3_description,
+                    ac.level4,
+                    ac.level4_description
+                    FROM atc_code ac
+                    WHERE ac.who_name IS NOT NULL
+                    GROUP BY
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level2,
+                    ac.level2_description,
+                    ac.level3,
+                    ac.level3_description,
+                    ac.level4,
+                    ac.level4_description
+                            ON CONFLICT(atc_code) DO UPDATE SET
+                    who_name=EXCLUDED.who_name,
+                    level1=EXCLUDED.level1,
+                    level1_description=EXCLUDED.level1_description,
+                    level2=EXCLUDED.level2,
+                    level2_description=EXCLUDED.level2_description,
+                    level3=EXCLUDED.level3,
+                    level3_description=EXCLUDED.level3_description,
+                    level4=EXCLUDED.level4,
+                    level4_description=EXCLUDED.level4_description
+                            ;
+                            """
+                ),
             )
             conn.execute(
                 text(
                     """
-                            INSERT INTO chembl_mols(
-                                name,
-                                mol_regno,
-                                chembl_id,
-                                canonical_smiles,
-                                standard_inchi,
-                                standard_inchi_key
+                            INSERT INTO atc_code(
+                    atc_code,
+                    who_name,
+                    level1,
+                    level1_description,
+                    level2,
+                    level2_description,
+                    level3,
+                    level3_description
                                 )
-                            VALUES(upper(:pref_name),:molregno,:chembl_id,:canonical_smiles,:standard_inchi,:standard_inchi_key)
-                            ON CONFLICT DO NOTHING
+                           SELECT
+                    ac.level3,
+                    ac.level3_description,
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level2,
+                    ac.level2_description,
+                    ac.level3,
+                    ac.level3_description
+                    FROM atc_code ac
+                    WHERE ac.who_name IS NOT NULL
+                    GROUP BY
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level2,
+                    ac.level2_description,
+                    ac.level3,
+                    ac.level3_description
+                            ON CONFLICT(atc_code) DO UPDATE SET
+                    who_name=EXCLUDED.who_name,
+                    level1=EXCLUDED.level1,
+                    level1_description=EXCLUDED.level1_description,
+                    level2=EXCLUDED.level2,
+                    level2_description=EXCLUDED.level2_description,
+                    level3=EXCLUDED.level3,
+                    level3_description=EXCLUDED.level3_description
                             ;
                             """
                 ),
-                molecules,
+            )
+            conn.execute(
+                text(
+                    """
+                            INSERT INTO atc_code(
+                    atc_code,
+                    who_name,
+                    level1,
+                    level1_description,
+                    level2,
+                    level2_description
+                                )
+                           SELECT
+                    ac.level2,
+                    ac.level2_description,
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level2,
+                    ac.level2_description
+                    FROM atc_code ac
+                    WHERE ac.who_name IS NOT NULL
+                    GROUP BY
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level2,
+                    ac.level2_description
+                            ON CONFLICT(atc_code) DO UPDATE SET
+                    who_name=EXCLUDED.who_name,
+                    level1=EXCLUDED.level1,
+                    level1_description=EXCLUDED.level1_description,
+                    level2=EXCLUDED.level2,
+                    level2_description=EXCLUDED.level2_description
+                            ;
+                            """
+                ),
+            )
+            conn.execute(
+                text(
+                    """
+                            INSERT INTO atc_code(
+                    atc_code,
+                    who_name,
+                    level1,
+                    level1_description
+                                )
+                           SELECT
+                    ac.level1,
+                    ac.level1_description,
+                    ac.level1,
+                    ac.level1_description
+                    FROM atc_code ac
+                    WHERE ac.who_name IS NOT NULL
+                    GROUP BY
+                    ac.level1,
+                    ac.level1_description
+                            ON CONFLICT(atc_code) DO UPDATE SET
+                    who_name=EXCLUDED.who_name,
+                    level1=EXCLUDED.level1,
+                    level1_description=EXCLUDED.level1_description
+                            ;
+                            """
+                ),
             )
             conn.commit()
+
 
     def resolve_chembl(self):
         with self.engine.connect() as conn:
@@ -713,7 +877,9 @@ class Oeamdb:
                     chembl_name=cm.name,
                     standard_inchi=cm.standard_inchi,
                     standard_inchi_key=cm.standard_inchi_key,
-                    canonical_smiles=cm.canonical_smiles
+                    canonical_smiles=cm.canonical_smiles,
+                    mol_type=cm.molecule_type,
+                    struct_type=cm.structure_type
                     FROM chembl_mols AS cm
                     WHERE s.name_en=cm.name
                     ;"""))
@@ -736,7 +902,8 @@ class Oeamdb:
                     latitude REAL,
                     longitude REAL,
                     geoloc_success BOOL,
-                    raw_data JSON
+                    raw_data JSON,
+                    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """
             )
@@ -850,3 +1017,179 @@ class Oeamdb:
                         loc_data,
                     )
                     conn.commit()
+
+    def resolve_pubchem(self,max_queries=None):
+        if max_queries is None:
+            max_queries = self.max_pubchem_queries
+        query_count = 0
+        last_query = 0
+        with sqlite3.connect(
+            self.data_folder / "oeamdb_pubchemc.db"
+        ) as pubchem_cache_conn, self.engine.connect() as conn:
+            pubchem_cache_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS compound(
+                    search_text TEXT PRIMARY KEY,
+                    canonical_smiles TEXT,
+                    standard_inchi TEXT,
+                    standard_inchi_key TEXT,
+                    pubchem_cid TEXT,
+                    pubchem_sid TEXT,
+                    success BOOL,
+                    raw_data JSON,
+                    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """
+            )
+            missing_smiles = conn.execute(
+                text(
+                    """SELECT
+                        id,
+                        COALESCE(chembl_name,name_en),
+                        COUNT(*) OVER () AS total_count
+                     FROM substance
+                    WHERE canonical_smiles IS NULL AND
+                    (
+                        (chembl_id IS NOT NULL AND struct_type != 'SEQ')
+                        OR chembl_id IS NULL
+                    )
+                            """
+                )
+            )
+            for i, s_info in enumerate(missing_smiles):
+                sid, s, s_cnt = s_info
+                logger.info(f"Querying Pubchem element {i+1} (over {s_cnt} total missing SMILES)")
+                sq = pubchem_cache_conn.execute(
+                    """SELECT   canonical_smiles,
+                                standard_inchi,
+                                standard_inchi_key,
+                                pubchem_cid,
+                                pubchem_sid,
+                                success,
+                                raw_data FROM compound
+                        WHERE search_text=:search_text
+                            ;""",
+                    {"search_text": s},
+                ).fetchone()
+                if not sq:
+                    if max_queries is not None and query_count >= max_queries:
+                        s_data = None
+                        logger.info(
+                            f"Skipped element {i+1} (max queries to PubChem reached)"
+                        )
+
+                    else:
+                        delay = time.time() - last_query
+                        if delay < 0.5:
+                            time.sleep(delay)
+                        comp = pcp.get_compounds(s,"name")
+                        query_count += 1
+                        last_query = time.time()
+                        if comp:
+                            lengths = {
+                                len({cp.canonical_smiles for cp in comp}),
+                                len({cp.inchikey for cp in comp}),
+                                }
+                            if lengths != {1}:
+                                msg = f"{len(comp)} non-matching elements found for {s}: {comp}"
+                                logger.info(msg)
+
+                                s_data = {
+                                    "search_text":s,
+                                    "pubchem_cid":None,
+                                    "pubchem_sid":None,
+                                    "canonical_smiles":None,
+                                    "standard_inchi":None,
+                                    "standard_inchi_key":None,
+                                    "raw_data": [cp.record for cp in comp],
+                                    "success": False,
+                                    "sid": sid,
+                                }
+                            else:
+                                c = comp[0]
+                                s_data = {
+                                    "search_text":s,
+                                    "pubchem_cid":c.cid,
+                                    "pubchem_sid":None,
+                                    "canonical_smiles":c.canonical_smiles,
+                                    "standard_inchi":c.inchi,
+                                    "standard_inchi_key":c.inchikey,
+                                    "raw_data": c.record,
+                                    "success": True,
+                                    "sid": sid,
+                                }
+                        else:
+                            s_data = {
+                                "search_text":s,
+                                "pubchem_cid":None,
+                                "pubchem_sid":None,
+                                "canonical_smiles":None,
+                                "standard_inchi":None,
+                                "standard_inchi_key":None,
+                                "raw_data": None,
+                                "success": False,
+                                "sid": sid,
+                            }
+                            logger.info(f"Failed address {i+1} (OSM return None)")
+                        pubchem_cache_conn.execute(
+                            """INSERT INTO compound(
+                                search_text,
+                                canonical_smiles,
+                                standard_inchi,
+                                standard_inchi_key,
+                                pubchem_cid,
+                                pubchem_sid,
+                                success,
+                                raw_data)
+                            SELECT
+                                :search_text,
+                                :canonical_smiles,
+                                :standard_inchi,
+                                :standard_inchi_key,
+                                :pubchem_cid,
+                                :pubchem_sid,
+                                :success,
+                                :raw_data
+                                    ;""",
+                            s_data,
+                        )
+                        pubchem_cache_conn.commit()
+                else:
+                    match sq[3]:
+                        case None:
+                            raw_data = None
+                        case "null":
+                            raw_data = None
+                        case str():
+                            raw_data = json.loads(sq[6])
+                        case _:
+                            raw_data = sq[6]
+                    s_data = {
+                                "canonical_smiles": sq[0],
+                                "standard_inchi": sq[1],
+                                "standard_inchi_key": sq[2],
+                                "pubchem_cid": sq[3],
+                                "pubchem_sid": sq[4],
+                                "success": sq[5],
+                                "raw_data": raw_data,
+                                "sid": sid,
+                    }
+                    logger.info(f"Retrieved element {i+1} from local cache")
+                if s_data:
+                    conn.execute(
+                        text(
+                            """UPDATE substance
+                        SET
+                                canonical_smiles=:canonical_smiles,
+                                standard_inchi=:standard_inchi,
+                                standard_inchi_key=:standard_inchi_key,
+                                pubchem_cid=:pubchem_cid,
+                                pubchem_sid=:pubchem_sid
+                        WHERE id=:sid
+                                ;"""
+                        )
+                        ,
+                        s_data,
+                    )
+                    conn.commit()
+

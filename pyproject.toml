@@ -30,6 +30,7 @@ dependencies = [
     "python-levenshtein",
     "xxhash",
     "polars",
+    "pubchempy",
 ]
 description = "Gathering official pharmaceutical products list for Austria, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]

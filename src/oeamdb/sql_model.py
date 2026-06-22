@@ -108,14 +108,17 @@ class Substance(Base):
 
     id = Column(Integer, primary_key=True)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
-    pubchem_id = Column(String)
+    pubchem_cid = Column(String)
+    pubchem_sid = Column(String)
     chembl_id = Column(String)
-    name_de = Column(String, unique=True)
-    name_en = Column(String)
+    name_en = Column(String, unique=True)
+    name_de = Column(String)
     chembl_name = Column(String)
     canonical_smiles = Column(String)
     standard_inchi = Column(String)
     standard_inchi_key = Column(String)
+    mol_type = Column(String)
+    struct_type = Column(String)
 
 
 class ProductSubstances(Base):
@@ -149,7 +152,6 @@ class ATCCode(Base):
     level2_description = Column(String)
     level3_description = Column(String)
     level4_description = Column(String)
-    level5_description = Column(String)
     has_been_replaced = Column(Boolean)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
 
