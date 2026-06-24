@@ -1,3 +1,7 @@
+import json
+import sqlite3
+import datetime
+
 
 def adapt_date_iso(val):
     """Adapt datetime.date to ISO 8601 date."""
@@ -16,7 +20,7 @@ def adapt_datetime_epoch(val):
 
 sqlite3.register_adapter(datetime.date, adapt_date_iso)
 sqlite3.register_adapter(datetime.datetime, adapt_datetime_iso)
-#sqlite3.register_adapter(datetime.datetime, adapt_datetime_epoch)
+# sqlite3.register_adapter(datetime.datetime, adapt_datetime_epoch)
 
 
 def convert_date(val):
@@ -37,3 +41,7 @@ def convert_timestamp(val):
 sqlite3.register_converter("date", convert_date)
 sqlite3.register_converter("datetime", convert_datetime)
 sqlite3.register_converter("timestamp", convert_timestamp)
+
+sqlite3.register_adapter(dict, json.dumps)
+sqlite3.register_adapter(list, json.dumps)
+sqlite3.register_converter("JSON", json.loads)

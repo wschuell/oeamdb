@@ -3,7 +3,7 @@
 import importlib
 import logging
 
-logging.getLogger(__name__).addHandler(logging.NullHandler())
+# logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __author__ = "William Schueller"
 __email__ = "william.schueller@gmail.com"
@@ -11,9 +11,11 @@ __version__ = "0.1.0"
 
 
 _LAZY_IMPORTS = {
-	"Oeamdb":"oeamdb",
-	"BasgDownloader":"basg_dl",
+    "Oeamdb": "oeamdb",
+    "BasgDownloader": "downloaders",
 }
+
+from . import sql_adapters
 
 
 def __getattr__(name):
@@ -46,6 +48,6 @@ def __dir__():
 
 
 __all__ = [
-	"Oeamdb",
-	"BasgDownloader",
+    "Oeamdb",
+    "BasgDownloader",
 ]
