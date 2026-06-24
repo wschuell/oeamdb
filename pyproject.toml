@@ -53,6 +53,14 @@ publishing = [
     "twine",
     "wheel",
 ]
+exploration = [
+    "polars",
+    "matplotlib",
+    "seaborn",
+    "pyarrow",
+    "python-calamine",
+    "fastexcel"
+]
 
 [project.urls]
 Repository = "https://github.com/wschuell/oeamdb"
