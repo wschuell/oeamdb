@@ -36,9 +36,15 @@ import requests
 
 import pymupdf
 import pymupdf4llm
+import multiprocessing as mp
 
 logger = logging.getLogger(__name__)
 
+
+def _fetch_worker(args):
+    i, meta = args
+    dl_info = fetch_and_parse(url=meta["url"])
+    return i, meta, dl_info
 
 def compute_hash(text_data: str | bytes) -> str:
     return xxhash.xxh3_64(text_data).hexdigest()
@@ -49,7 +55,7 @@ def compute_filehash(filepath: str | Path) -> str:
         return compute_hash(f.read())
 
 
-def chunked(iterable, size):
+def chunked(iterable, size=10**4):
     it = iter(iterable)
     while batch := list(islice(it, size)):
         yield batch
@@ -150,6 +156,25 @@ def parse_pdf(content: bytes, embed_images: bool = True):
     md = pymupdf4llm.to_markdown(doc, embed_images=embed_images)
     return md
 
+def fetch_and_parse(url, max_attempts=5):
+    delay = 1
+    for _ in range(max_attempts):
+        try:
+            r = requests.get(url, timeout=10)
+        except requests.RequestException:
+            time.sleep(delay); delay += 1; continue
+        if r.ok:
+            return {"content": r.content,
+                    "text_content": parse_pdf(r.content),
+                    "download_success": True}
+        if r.status_code == 404:
+            return {"content": None,
+                    "text_content": None, "download_success": False}
+        if r.status_code == 104:
+            time.sleep(delay); delay += 1; continue
+        raise IOError(f"Failed download status {r.status_code}: {url}")
+    return None
+
 
 class Importer:
     def __init__(
@@ -225,6 +250,8 @@ class Oeamdb:
         geolocator=None,
         max_pubchem_queries=None,
         max_docs_queries=None,
+        workers=None,
+        commit_batch=100,
     ):
         self.engine_url = engine_url
         if engine is not None:
@@ -252,6 +279,11 @@ class Oeamdb:
         self.geocode = RateLimiter(self.locator.geocode, min_delay_seconds=1.5)
         self.max_pubchem_queries = max_pubchem_queries
         self.max_docs_queries = max_docs_queries
+        self.commit_batch = commit_batch
+        if workers is None:
+            self.workers = max(1,mp.cpu_count()-1)
+        else:
+            self.workers = workers
 
     def download_basg(self, force=False):
         bdl = BasgDownloader(data_folder=self.data_folder)
@@ -1352,7 +1384,7 @@ class Oeamdb:
                     );
                 """
             )
-            missing_docs = conn.execute(
+            missing_doc = conn.execute(
                 text(
                     """SELECT
                         d.url,
@@ -1363,87 +1395,114 @@ class Oeamdb:
                      FROM document d
                      INNER JOIN product p
                         ON p.id=d.product_id
-                     WHERE d.content is NULL AND download_success IS NULL
+                     WHERE download_success IS NULL
+                     LIMIT 1
                             """
                 )
-            )
-            for i, d_info in enumerate(missing_docs):
-                url, valid_since, product_key, doc_type, d_cnt = d_info
-                product_key_formatted = product_key.replace('/',"__")
-                logger.info(f"Getting document {i+1} (over {d_cnt} total missing)")
-                doc_name = f"{product_key_formatted}{separator}{doc_type}{separator}{valid_since}.pdf"
-                doc_path = self.data_folder / "docs" / doc_name
-                (self.data_folder / "docs").mkdir(parents=True, exist_ok=True)
-                if not doc_path.exists():
-                    if max_queries is not None and query_count >= max_queries:
-                        doc_data = None
-                        logger.info(
-                            f"Skipped document {i+1} (max downloads reached)"
-                        )
-
-                    else:
-                        r = requests.get(url,timeout=30)
-                        query_count += 1
-                        if r.ok:
-                            doc_data = {
-                                "content":r.content,
-                                "download_success":True,
-                                "valid_since":valid_since,
-                                "product_key":product_key,
-                                "doc_type": doc_type,
-                                "product_key_formatted":product_key_formatted,
-                            }
-                        elif r.status_code == 404:
-                            doc_data = {
-                                "content":None,
-                                "download_success":False,
-                                "valid_since":valid_since,
-                                "product_key":product_key,
-                                "doc_type": doc_type,
-                                "product_key_formatted":product_key_formatted,
-                            }
-                            logger.info(f"Failed download {i+1}")
-                        elif r.status_code == 104:
-                            logger.info(f"Failed download {i+1} with 104, waiting {delay} seconds")
-                            print(f"Failed download {i+1} with 104, waiting {delay} seconds")
-                            doc_data = None
-                            time.sleep(delay)
-                            delay += 1
-                        else:
-                            raise IOError(f"Failed download with status {r.status_code}: {url}")
-                        with doc_path.open(mode="wb") as f:
-                            if doc_data["content"] is not None:
-                                f.write(doc_data["content"])
-                else:
-                    with doc_path.open(mode="rb") as f:
-                        content = f.read()
-                    doc_data = {
-                                "content":(content if len(content)>2 else None),
-                                "download_success":len(content)>2,
-                                "valid_since":valid_since,
-                                "product_key":product_key,
-                                "doc_type": doc_type,
-                                "product_key_formatted":product_key_formatted,
-                            }
-                    logger.info(f"Retrieved document {i+1}")
-                if doc_data:
-                    doc_data["text_content"] = parse_pdf(doc_data["content"])
-                    conn.execute(
-                        text(
-                            """UPDATE document
-                        SET
-                                content=:content,
-                                text_content=:text_content,
-                                download_success=:download_success
-                        FROM product p
-                        WHERE p.product_key=:product_key
-                            AND p.id=product_id
-                            AND valid_since=:valid_since
-                            AND doc_type=:doc_type
-                                ;"""
-                        )
-                        ,
-                        doc_data,
+            ).fetchone()
+            if missing_doc:
+                dq = docs_cache_conn.execute(
+                    """SELECT  url,text_content,success FROM document
+                            ;""",
                     )
-                    conn.commit()
+                for chunk in chunked(
+                    iterable=({
+                        "url":r[0],
+                        "text_content":r[1],
+                        "success":bool(r[2]),
+                        } for r in dq.fetchall()),
+                    size = 10**3,
+                    ):
+                    conn.execute(
+                        text("""
+                            UPDATE document
+                                SET text_content=:text_content,
+                                download_success=:success
+                            WHERE download_success IS NULL
+                            AND url=:url
+                            ;"""
+                            ),
+                        chunk
+                        )
+                conn.commit()
 
+                missing_docs_query = conn.execute(
+                                    text(
+                                        """SELECT
+                                            d.url,
+                                            d.valid_since,
+                                            p.product_key,
+                                            d.doc_type,
+                                            COUNT(*) OVER () AS total_count
+                                         FROM document d
+                                         INNER JOIN product p
+                                            ON p.id=d.product_id
+                                         WHERE download_success IS NULL
+                                                """
+                                    )
+                                )
+                missing_docs = [
+                    (i,dict(d._mapping))
+                    for (i,d) in enumerate(missing_docs_query.fetchall())
+                    ]
+
+
+                if max_queries is not None:
+                    if len(missing_docs) > max_queries:
+                        fetch_tasks = missing_docs[:max_queries]
+                        logger.info(f"Skipping {len(missing_docs)} documents (to stay below max downloads)")
+                else:
+                    fetch_tasks = missing_docs
+
+                with mp.Pool(self.workers) as pool:
+                    n = 0
+                    for i, meta, dl_info in pool.imap_unordered(_fetch_worker, fetch_tasks):
+                        if dl_info is None:
+                            logger.info(f"Failed/skipped document {i+1}")
+                            continue
+
+                        doc_data = {**meta, **dl_info}
+
+                        # SQLite cache write (parent owns the connection)
+                        docs_cache_conn.execute(
+                                """INSERT INTO document(
+                                    url,
+                                    text_content,
+                                    valid_since,
+                                    doc_type,
+                                    product_key,
+                                    success)
+                                SELECT
+                                    :url,
+                                    :text_content,
+                                    :valid_since,
+                                    :doc_type,
+                                    :product_key,
+                                    :download_success
+                                        ;""",
+                                doc_data,
+                                )
+
+                        # main DB update
+                        conn.execute(
+                            text(
+                                """UPDATE document
+                            SET
+                                    text_content=:text_content,
+                                    download_success=:download_success
+                            FROM product p
+                            WHERE p.product_key=:product_key
+                                AND p.id=product_id
+                                AND valid_since=:valid_since
+                                AND doc_type=:doc_type
+                                    ;"""
+                            )
+                            ,
+                            doc_data,
+                            )
+                        n += 1
+                        if n % self.commit_batch == 0:
+                            docs_cache_conn.commit()
+                            conn.commit()
+                docs_cache_conn.commit()
+                conn.commit()

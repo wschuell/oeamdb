@@ -184,7 +184,6 @@ class Document(Base):
     product_id = Column(ForeignKey(Product.id))
     url = Column(String)
     valid_since = Column(Date)
-    content = Column(LargeBinary)
     text_content = Column(String)
     download_success = Column(Boolean)
 
@@ -197,7 +196,16 @@ class Document(Base):
             product_id,
             doc_type,
             valid_since,
-            postgresql_where=and_(content.is_(None),download_success.is_(None)),
+            postgresql_where=download_success.is_(None),
+        ),
+        Index(
+            'doc_url_partial_idx',
+            url,
+            postgresql_where=download_success.is_(None),
+        ),
+        Index(
+            'doc_url_idx',
+            url,
         ),
     )
 

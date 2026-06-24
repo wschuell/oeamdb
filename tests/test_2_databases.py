@@ -52,6 +52,6 @@ def test_docs(testengine, persistent_tmp_path):
     db = oeamdb.Oeamdb(
         engine=testengine,
         data_folder=persistent_tmp_path / "basg_dl",
-        max_docs_queries=20,
+        max_docs_queries=3,
     )
     db.resolve_docs()
