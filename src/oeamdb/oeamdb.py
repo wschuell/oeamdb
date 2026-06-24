@@ -31,6 +31,12 @@ import logging
 import pubchempy as pcp
 import time
 
+from bs4 import BeautifulSoup
+import requests
+
+import pymupdf
+import pymupdf4llm
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,6 +145,11 @@ def match_lists(en, de, product_key):
         enc.remove(e)
     return pairs
 
+def parse_pdf(content: bytes, embed_images: bool = True):
+    doc = pymupdf.open(stream=content, filetype="pdf")
+    md = pymupdf4llm.to_markdown(doc, embed_images=embed_images)
+    return md
+
 
 class Importer:
     def __init__(
@@ -213,6 +224,7 @@ class Oeamdb:
         max_geoloc_queries=None,
         geolocator=None,
         max_pubchem_queries=None,
+        max_docs_queries=None,
     ):
         self.engine_url = engine_url
         if engine is not None:
@@ -239,6 +251,7 @@ class Oeamdb:
             self.locator = geolocator
         self.geocode = RateLimiter(self.locator.geocode, min_delay_seconds=1.5)
         self.max_pubchem_queries = max_pubchem_queries
+        self.max_docs_queries = max_docs_queries
 
     def download_basg(self, force=False):
         bdl = BasgDownloader(data_folder=self.data_folder)
@@ -866,6 +879,127 @@ class Oeamdb:
             )
             conn.commit()
 
+    def get_atc_corrections(self, force=False):
+        filepath = self.data_folder / "atc_corrections_fhi.no.json"
+        if not filepath.exists() or force:
+            r = requests.get("https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",timeout=5)
+
+            soup = BeautifulSoup(r.content,"html.parser")
+            div_table = soup.find_all("div",attrs={"class":"listtable"})[0]
+            rows = [
+                        [(
+                            rr.text.split("\xa0")[0].strip("\n"),
+                            (rr.a["title"].strip("\n") if rr.find("a") else None),
+                            ) for rr in
+                        r.find_all("td")
+                        ]
+                    for r in div_table.find_all("tr")
+                    if len(r.find_all("td"))>1
+                    ]
+            atc_corrections = [{    "submitted_by":None,
+                                    "atc_from":r[0][0],
+                                    "name":r[1][0],
+                                    "atc_to":r[2][0],
+                                    "year":r[3][0],
+                                    "footnotes":
+                                            {
+                                            "footnote_from":r[0][1],
+                                            "footnote_name":r[1][1],
+                                            "footnote_to":r[2][1],
+                                            "footnote_year":r[3][1],
+                                             },
+                                } for r in rows
+                                ]
+            with filepath.open(mode="w") as f:
+                f.write(json.dumps(atc_corrections))
+        else:
+            with filepath.open(mode="r") as f:
+                atc_corrections = json.load(f)
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                            INSERT INTO atc_correction(
+                                submitted_by,
+                                replacement_year,
+                                name,
+                                old_code,
+                                new_code,
+                                footnotes
+                                )
+                            VALUES(
+                                :submitted_by,
+                                :year,
+                                :name,
+                                :atc_from,
+                                :atc_to,
+                                :footnotes
+                                )
+                            ON CONFLICT DO NOTHING
+                            ;
+                            """
+                ).bindparams(
+                            bindparam(
+                                "footnotes",
+                                type_=JSON(
+                                    none_as_null=True
+                                ),  # ().with_variant(JSONB, "postgresql"),
+                            )
+                        ),
+                atc_corrections,
+            )
+            conn.commit()
+
+    def apply_atc_corrections(self):
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    WITH ranked_corrections AS (
+                        SELECT
+                            corr.old_code,
+                            corr.name,
+                            corr.replacement_year,
+                            target.level1,
+                            target.level1_description,
+                            target.level2,
+                            target.level2_description,
+                            target.level3,
+                            target.level3_description,
+                            target.level4,
+                            target.level4_description,
+                            target.level5,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY corr.old_code
+                                ORDER BY corr.replacement_year DESC
+                            ) as rn
+                        FROM atc_correction corr
+                        LEFT OUTER JOIN atc_code target
+                            ON target.atc_code = corr.new_code
+                    )
+                    UPDATE atc_code
+                    SET
+                        who_name = r.name,
+                        level1 = r.level1,
+                        level1_description = r.level1_description,
+                        level2 = r.level2,
+                        level2_description = r.level2_description,
+                        level3 = r.level3,
+                        level3_description = r.level3_description,
+                        level4 = r.level4,
+                        level4_description = r.level4_description,
+                        level5 = r.level5,
+                        replacement_year = r.replacement_year,
+                        has_been_replaced = true
+                    FROM ranked_corrections r
+                    WHERE atc_code.atc_code = r.old_code
+                      AND r.rn = 1
+                ;
+                """
+                ),
+            )
+            conn.commit()
+
 
     def resolve_chembl(self):
         with self.engine.connect() as conn:
@@ -1190,6 +1324,126 @@ class Oeamdb:
                         )
                         ,
                         s_data,
+                    )
+                    conn.commit()
+
+
+    def resolve_docs(self,max_queries=None):
+        separator = "._."
+
+        if max_queries is None:
+            max_queries = self.max_docs_queries
+        query_count = 0
+        delay = 1
+        with sqlite3.connect(
+            self.data_folder / "oeamdb_docs.db"
+        ) as docs_cache_conn, self.engine.connect() as conn:
+            docs_cache_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document(
+                    url TEXT PRIMARY KEY,
+                    product_key TEXT,
+                    doc_type TEXT,
+                    valid_since INTEGER,
+                    content BLOB,
+                    text_content TEXT,
+                    success BOOL,
+                    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """
+            )
+            missing_docs = conn.execute(
+                text(
+                    """SELECT
+                        d.url,
+                        d.valid_since,
+                        p.product_key,
+                        d.doc_type,
+                        COUNT(*) OVER () AS total_count
+                     FROM document d
+                     INNER JOIN product p
+                        ON p.id=d.product_id
+                     WHERE d.content is NULL AND download_success IS NULL
+                            """
+                )
+            )
+            for i, d_info in enumerate(missing_docs):
+                url, valid_since, product_key, doc_type, d_cnt = d_info
+                product_key_formatted = product_key.replace('/',"__")
+                logger.info(f"Getting document {i+1} (over {d_cnt} total missing)")
+                doc_name = f"{product_key_formatted}{separator}{doc_type}{separator}{valid_since}.pdf"
+                doc_path = self.data_folder / "docs" / doc_name
+                (self.data_folder / "docs").mkdir(parents=True, exist_ok=True)
+                if not doc_path.exists():
+                    if max_queries is not None and query_count >= max_queries:
+                        doc_data = None
+                        logger.info(
+                            f"Skipped document {i+1} (max downloads reached)"
+                        )
+
+                    else:
+                        r = requests.get(url,timeout=30)
+                        query_count += 1
+                        if r.ok:
+                            doc_data = {
+                                "content":r.content,
+                                "download_success":True,
+                                "valid_since":valid_since,
+                                "product_key":product_key,
+                                "doc_type": doc_type,
+                                "product_key_formatted":product_key_formatted,
+                            }
+                        elif r.status_code == 404:
+                            doc_data = {
+                                "content":None,
+                                "download_success":False,
+                                "valid_since":valid_since,
+                                "product_key":product_key,
+                                "doc_type": doc_type,
+                                "product_key_formatted":product_key_formatted,
+                            }
+                            logger.info(f"Failed download {i+1}")
+                        elif r.status_code == 104:
+                            logger.info(f"Failed download {i+1} with 104, waiting {delay} seconds")
+                            print(f"Failed download {i+1} with 104, waiting {delay} seconds")
+                            doc_data = None
+                            time.sleep(delay)
+                            delay += 1
+                        else:
+                            raise IOError(f"Failed download with status {r.status_code}: {url}")
+                        with doc_path.open(mode="wb") as f:
+                            if doc_data["content"] is not None:
+                                f.write(doc_data["content"])
+                else:
+                    with doc_path.open(mode="rb") as f:
+                        content = f.read()
+                    doc_data = {
+                                "content":(content if len(content)>2 else None),
+                                "download_success":len(content)>2,
+                                "valid_since":valid_since,
+                                "product_key":product_key,
+                                "doc_type": doc_type,
+                                "product_key_formatted":product_key_formatted,
+                            }
+                    logger.info(f"Retrieved document {i+1}")
+                if doc_data:
+                    doc_data["text_content"] = parse_pdf(doc_data["content"])
+                    conn.execute(
+                        text(
+                            """UPDATE document
+                        SET
+                                content=:content,
+                                text_content=:text_content,
+                                download_success=:download_success
+                        FROM product p
+                        WHERE p.product_key=:product_key
+                            AND p.id=product_id
+                            AND valid_since=:valid_since
+                            AND doc_type=:doc_type
+                                ;"""
+                        )
+                        ,
+                        doc_data,
                     )
                     conn.commit()
 
