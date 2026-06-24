@@ -40,11 +40,14 @@ import multiprocessing as mp
 
 logger = logging.getLogger(__name__)
 
-
 def _fetch_worker(args):
     i, meta = args
-    dl_info = fetch_and_parse(url=meta["url"])
-    return i, meta, dl_info
+    try:
+        dl_info = fetch_and_parse(url=meta["url"])
+        return i, meta, dl_info, None
+    except Exception as e:
+        # return a plain string, never the live exception/traceback
+        return i, meta, None, f"{type(e).__name__}: {e}"
 
 def compute_hash(text_data: str | bytes) -> str:
     return xxhash.xxh3_64(text_data).hexdigest()
@@ -1365,8 +1368,6 @@ class Oeamdb:
 
         if max_queries is None:
             max_queries = self.max_docs_queries
-        query_count = 0
-        delay = 1
         with sqlite3.connect(
             self.data_folder / "oeamdb_docs.db"
         ) as docs_cache_conn, self.engine.connect() as conn:
@@ -1456,11 +1457,13 @@ class Oeamdb:
 
                 with mp.Pool(self.workers) as pool:
                     n = 0
-                    for i, meta, dl_info in pool.imap_unordered(_fetch_worker, fetch_tasks):
+                    for i, meta, dl_info,err in pool.imap_unordered(_fetch_worker, fetch_tasks):
+                        if err is not None:
+                            logger.warning(f"Document {i+1} failed: {err}")
+                            continue
                         if dl_info is None:
                             logger.info(f"Failed/skipped document {i+1}")
                             continue
-
                         doc_data = {**meta, **dl_info}
 
                         # SQLite cache write (parent owns the connection)
