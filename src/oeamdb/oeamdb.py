@@ -31,8 +31,23 @@ import logging
 import pubchempy as pcp
 import time
 
+from bs4 import BeautifulSoup
+import requests
+
+import pymupdf
+import pymupdf4llm
+import multiprocessing as mp
+
 logger = logging.getLogger(__name__)
 
+def _fetch_worker(args):
+    i, meta = args
+    try:
+        dl_info = fetch_and_parse(url=meta["url"])
+        return i, meta, dl_info, None
+    except Exception as e:
+        # return a plain string, never the live exception/traceback
+        return i, meta, None, f"{type(e).__name__}: {e}"
 
 def compute_hash(text_data: str | bytes) -> str:
     return xxhash.xxh3_64(text_data).hexdigest()
@@ -43,7 +58,7 @@ def compute_filehash(filepath: str | Path) -> str:
         return compute_hash(f.read())
 
 
-def chunked(iterable, size):
+def chunked(iterable, size=10**4):
     it = iter(iterable)
     while batch := list(islice(it, size)):
         yield batch
@@ -139,6 +154,30 @@ def match_lists(en, de, product_key):
         enc.remove(e)
     return pairs
 
+def parse_pdf(content: bytes, embed_images: bool = True):
+    doc = pymupdf.open(stream=content, filetype="pdf")
+    md = pymupdf4llm.to_markdown(doc, embed_images=embed_images)
+    return md
+
+def fetch_and_parse(url, max_attempts=5):
+    delay = 1
+    for _ in range(max_attempts):
+        try:
+            r = requests.get(url, timeout=10)
+        except requests.RequestException:
+            time.sleep(delay); delay += 1; continue
+        if r.ok:
+            return {"content": r.content,
+                    "text_content": parse_pdf(r.content),
+                    "download_success": True}
+        if r.status_code == 404:
+            return {"content": None,
+                    "text_content": None, "download_success": False}
+        if r.status_code == 104:
+            time.sleep(delay); delay += 1; continue
+        raise IOError(f"Failed download status {r.status_code}: {url}")
+    return None
+
 
 class Importer:
     def __init__(
@@ -213,6 +252,9 @@ class Oeamdb:
         max_geoloc_queries=None,
         geolocator=None,
         max_pubchem_queries=None,
+        max_docs_queries=None,
+        workers=None,
+        commit_batch=100,
     ):
         self.engine_url = engine_url
         if engine is not None:
@@ -239,6 +281,12 @@ class Oeamdb:
             self.locator = geolocator
         self.geocode = RateLimiter(self.locator.geocode, min_delay_seconds=1.5)
         self.max_pubchem_queries = max_pubchem_queries
+        self.max_docs_queries = max_docs_queries
+        self.commit_batch = commit_batch
+        if workers is None:
+            self.workers = max(1,mp.cpu_count()-1)
+        else:
+            self.workers = workers
 
     def download_basg(self, force=False):
         bdl = BasgDownloader(data_folder=self.data_folder)
@@ -866,6 +914,127 @@ class Oeamdb:
             )
             conn.commit()
 
+    def get_atc_corrections(self, force=False):
+        filepath = self.data_folder / "atc_corrections_fhi.no.json"
+        if not filepath.exists() or force:
+            r = requests.get("https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",timeout=5)
+
+            soup = BeautifulSoup(r.content,"html.parser")
+            div_table = soup.find_all("div",attrs={"class":"listtable"})[0]
+            rows = [
+                        [(
+                            rr.text.split("\xa0")[0].strip("\n"),
+                            (rr.a["title"].strip("\n") if rr.find("a") else None),
+                            ) for rr in
+                        r.find_all("td")
+                        ]
+                    for r in div_table.find_all("tr")
+                    if len(r.find_all("td"))>1
+                    ]
+            atc_corrections = [{    "submitted_by":None,
+                                    "atc_from":r[0][0],
+                                    "name":r[1][0],
+                                    "atc_to":r[2][0],
+                                    "year":r[3][0],
+                                    "footnotes":
+                                            {
+                                            "footnote_from":r[0][1],
+                                            "footnote_name":r[1][1],
+                                            "footnote_to":r[2][1],
+                                            "footnote_year":r[3][1],
+                                             },
+                                } for r in rows
+                                ]
+            with filepath.open(mode="w") as f:
+                f.write(json.dumps(atc_corrections))
+        else:
+            with filepath.open(mode="r") as f:
+                atc_corrections = json.load(f)
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                            INSERT INTO atc_correction(
+                                submitted_by,
+                                replacement_year,
+                                name,
+                                old_code,
+                                new_code,
+                                footnotes
+                                )
+                            VALUES(
+                                :submitted_by,
+                                :year,
+                                :name,
+                                :atc_from,
+                                :atc_to,
+                                :footnotes
+                                )
+                            ON CONFLICT DO NOTHING
+                            ;
+                            """
+                ).bindparams(
+                            bindparam(
+                                "footnotes",
+                                type_=JSON(
+                                    none_as_null=True
+                                ),  # ().with_variant(JSONB, "postgresql"),
+                            )
+                        ),
+                atc_corrections,
+            )
+            conn.commit()
+
+    def apply_atc_corrections(self):
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    WITH ranked_corrections AS (
+                        SELECT
+                            corr.old_code,
+                            corr.name,
+                            corr.replacement_year,
+                            target.level1,
+                            target.level1_description,
+                            target.level2,
+                            target.level2_description,
+                            target.level3,
+                            target.level3_description,
+                            target.level4,
+                            target.level4_description,
+                            target.level5,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY corr.old_code
+                                ORDER BY corr.replacement_year DESC
+                            ) as rn
+                        FROM atc_correction corr
+                        LEFT OUTER JOIN atc_code target
+                            ON target.atc_code = corr.new_code
+                    )
+                    UPDATE atc_code
+                    SET
+                        who_name = r.name,
+                        level1 = r.level1,
+                        level1_description = r.level1_description,
+                        level2 = r.level2,
+                        level2_description = r.level2_description,
+                        level3 = r.level3,
+                        level3_description = r.level3_description,
+                        level4 = r.level4,
+                        level4_description = r.level4_description,
+                        level5 = r.level5,
+                        replacement_year = r.replacement_year,
+                        has_been_replaced = true
+                    FROM ranked_corrections r
+                    WHERE atc_code.atc_code = r.old_code
+                      AND r.rn = 1
+                ;
+                """
+                ),
+            )
+            conn.commit()
+
 
     def resolve_chembl(self):
         with self.engine.connect() as conn:
@@ -1193,3 +1362,149 @@ class Oeamdb:
                     )
                     conn.commit()
 
+
+    def resolve_docs(self,max_queries=None):
+        separator = "._."
+
+        if max_queries is None:
+            max_queries = self.max_docs_queries
+        with sqlite3.connect(
+            self.data_folder / "oeamdb_docs.db"
+        ) as docs_cache_conn, self.engine.connect() as conn:
+            docs_cache_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document(
+                    url TEXT PRIMARY KEY,
+                    product_key TEXT,
+                    doc_type TEXT,
+                    valid_since INTEGER,
+                    content BLOB,
+                    text_content TEXT,
+                    success BOOL,
+                    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """
+            )
+            missing_doc = conn.execute(
+                text(
+                    """SELECT
+                        d.url,
+                        d.valid_since,
+                        p.product_key,
+                        d.doc_type,
+                        COUNT(*) OVER () AS total_count
+                     FROM document d
+                     INNER JOIN product p
+                        ON p.id=d.product_id
+                     WHERE download_success IS NULL
+                     LIMIT 1
+                            """
+                )
+            ).fetchone()
+            if missing_doc:
+                dq = docs_cache_conn.execute(
+                    """SELECT  url,text_content,success FROM document
+                            ;""",
+                    )
+                for chunk in chunked(
+                    iterable=({
+                        "url":r[0],
+                        "text_content":r[1],
+                        "success":bool(r[2]),
+                        } for r in dq.fetchall()),
+                    size = 10**3,
+                    ):
+                    conn.execute(
+                        text("""
+                            UPDATE document
+                                SET text_content=:text_content,
+                                download_success=:success
+                            WHERE download_success IS NULL
+                            AND url=:url
+                            ;"""
+                            ),
+                        chunk
+                        )
+                conn.commit()
+
+                missing_docs_query = conn.execute(
+                                    text(
+                                        """SELECT
+                                            d.url,
+                                            d.valid_since,
+                                            p.product_key,
+                                            d.doc_type,
+                                            COUNT(*) OVER () AS total_count
+                                         FROM document d
+                                         INNER JOIN product p
+                                            ON p.id=d.product_id
+                                         WHERE download_success IS NULL
+                                                """
+                                    )
+                                )
+                missing_docs = [
+                    (i,dict(d._mapping))
+                    for (i,d) in enumerate(missing_docs_query.fetchall())
+                    ]
+
+
+                if max_queries is not None and len(missing_docs) > max_queries:
+                    fetch_tasks = missing_docs[:max_queries]
+                    logger.info(f"Skipping {len(missing_docs)} documents (to stay below max downloads)")
+                else:
+                    fetch_tasks = missing_docs
+
+                with mp.Pool(self.workers) as pool:
+                    n = 0
+                    for i, meta, dl_info,err in pool.imap_unordered(_fetch_worker, fetch_tasks):
+                        if err is not None:
+                            logger.warning(f"Document {i+1} failed: {err}")
+                            continue
+                        if dl_info is None:
+                            logger.info(f"Failed/skipped document {i+1}")
+                            continue
+                        doc_data = {**meta, **dl_info}
+
+                        # SQLite cache write (parent owns the connection)
+                        docs_cache_conn.execute(
+                                """INSERT INTO document(
+                                    url,
+                                    text_content,
+                                    valid_since,
+                                    doc_type,
+                                    product_key,
+                                    success)
+                                SELECT
+                                    :url,
+                                    :text_content,
+                                    :valid_since,
+                                    :doc_type,
+                                    :product_key,
+                                    :download_success
+                                        ;""",
+                                doc_data,
+                                )
+
+                        # main DB update
+                        conn.execute(
+                            text(
+                                """UPDATE document
+                            SET
+                                    text_content=:text_content,
+                                    download_success=:download_success
+                            FROM product p
+                            WHERE p.product_key=:product_key
+                                AND p.id=product_id
+                                AND valid_since=:valid_since
+                                AND doc_type=:doc_type
+                                    ;"""
+                            )
+                            ,
+                            doc_data,
+                            )
+                        n += 1
+                        if n % self.commit_batch == 0:
+                            docs_cache_conn.commit()
+                            conn.commit()
+                docs_cache_conn.commit()
+                conn.commit()

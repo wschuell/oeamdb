@@ -31,7 +31,10 @@ dependencies = [
     "xxhash",
     "polars",
     "pubchempy",
-    "geopy>=2.4.1",
+    "geopy",
+    "beautifulsoup4",
+    "requests",
+    "pymupdf4llm",
 ]
 description = "Gathering official pharmaceutical products list for Austria, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]

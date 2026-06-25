@@ -13,6 +13,8 @@ from sqlalchemy import (
     Date,
     LargeBinary,
     JSON,
+    Index,
+    and_,
 )
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.orm import Mapped
@@ -153,6 +155,7 @@ class ATCCode(Base):
     level3_description = Column(String)
     level4_description = Column(String)
     has_been_replaced = Column(Boolean)
+    replacement_year = Column(Integer)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
 
 
@@ -181,12 +184,28 @@ class Document(Base):
     product_id = Column(ForeignKey(Product.id))
     url = Column(String)
     valid_since = Column(Date)
-    content = Column(LargeBinary)
     text_content = Column(String)
+    download_success = Column(Boolean)
 
     __table_args__ = (
         UniqueConstraint(
             "product_id", "doc_type", "valid_since", name="doc_constraint"
+        ),
+        Index(
+            'doc_content_null_idx',
+            product_id,
+            doc_type,
+            valid_since,
+            postgresql_where=download_success.is_(None),
+        ),
+        Index(
+            'doc_url_partial_idx',
+            url,
+            postgresql_where=download_success.is_(None),
+        ),
+        Index(
+            'doc_url_idx',
+            url,
         ),
     )
 
@@ -228,7 +247,9 @@ class ATCCorrection(Base):
 
     __tablename__ = "atc_correction"
     submitted_by = Column(String)
-    submitted_at = Column(DateTime)
+    name = Column(String)
+    replacement_year = Column(Integer)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
     old_code = Column(String, primary_key=True)
-    new_code = Column(String)
+    new_code = Column(String, primary_key=True)
+    footnotes = Column(JSON().with_variant(JSONB, "postgresql"))
