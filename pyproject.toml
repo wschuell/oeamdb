@@ -28,7 +28,7 @@ dependencies = [
     "psycopg",
     "asyncpg",
     "sqlalchemy",
-    "playwright==1.59.0",
+    "playwright<=1.59.0",
     "python-levenshtein",
     "xxhash",
     "polars",
