@@ -1448,10 +1448,9 @@ class Oeamdb:
                     ]
 
 
-                if max_queries is not None:
-                    if len(missing_docs) > max_queries:
-                        fetch_tasks = missing_docs[:max_queries]
-                        logger.info(f"Skipping {len(missing_docs)} documents (to stay below max downloads)")
+                if max_queries is not None and len(missing_docs) > max_queries:
+                    fetch_tasks = missing_docs[:max_queries]
+                    logger.info(f"Skipping {len(missing_docs)} documents (to stay below max downloads)")
                 else:
                     fetch_tasks = missing_docs
 
