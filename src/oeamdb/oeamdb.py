@@ -1578,7 +1578,7 @@ class Oeamdb:
                         SELECT
                             ps.product_id,
                             MIN(ps.substance_id) AS substance_id
-                        FROM product_substance ps
+                        FROM product_substances ps
                         GROUP BY ps.product_id
                         HAVING COUNT(ps.substance_id) = 1
                     ),
