@@ -100,6 +100,20 @@ class Substance(Base):
     mol_type = Column(String)
     struct_type = Column(String)
 
+    __table_args__ = (
+        Index(
+            's_chemblid_idx',
+            chembl_id
+        ),
+        Index(
+            's_pubchemcid_idx',
+            pubchem_cid
+        ),
+        Index(
+            's_pubchemsid_idx',
+            pubchem_sid
+        ),
+        )
 
 class ProductSubstances(Base):
 
@@ -113,6 +127,14 @@ class ProductSubstances(Base):
     product_id = Column(ForeignKey(Product.id), primary_key=True)
     substance_id = Column(ForeignKey(Substance.id), primary_key=True)
 
+
+    __table_args__ = (
+        Index(
+            'p_s_reverse_idx',
+            substance_id,
+            product_id,
+        ),
+        )
 
 class ATCCode(Base):
     """
@@ -149,6 +171,13 @@ class ProductATC(Base):
     product_id = Column(ForeignKey(Product.id), primary_key=True)
     atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
 
+    __table_args__ = (
+        Index(
+            'p_atc_reverse_idx',
+            atc_code,
+            product_id,
+        ),
+        )
 
 class SubstanceATC(Base):
 
@@ -162,6 +191,14 @@ class SubstanceATC(Base):
     substance_id = Column(ForeignKey(Substance.id), primary_key=True)
     atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
     notes = Column(String)
+
+    __table_args__ = (
+        Index(
+            's_atc_reverse_idx',
+            atc_code,
+            substance_id,
+        ),
+        )
 
 class Document(Base):
     """

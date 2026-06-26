@@ -695,6 +695,47 @@ class Oeamdb:
             )
             conn.commit()
 
+    def get_chembl_mol_atc(self):
+        if self.chembl_engine is None:
+            raise NotImplementedError(
+                "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
+            )
+        with self.chembl_engine.connect() as chembl_conn:
+            molecules_query = chembl_conn.execute(
+                text(
+                    """
+                    SELECT
+                        mac.level5 AS atc_code,
+                        md.chembl_id
+                    FROM molecule_atc_classification mac
+                    INNER JOIN molecule_dictionary md
+                    ON md.molregno=mac.molregno
+                ;"""
+                )
+            )
+            molecules_atc = [m._mapping for m in molecules_query]
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                            INSERT INTO substance_atc(
+                                atc_code,
+                                substance_id,
+                                notes)
+                            SELECT
+                                :atc_code,
+                                s.id,
+                                'From CHEMBL, ID '||:chembl_id
+                            FROM substance s
+                                WHERE s.chembl_id=:chembl_id
+                            ON CONFLICT DO NOTHING
+                            ;
+                            """
+                ),
+                molecules_atc,
+            )
+            conn.commit()
+
     def get_chembl_atc_info(self):
         if self.chembl_engine is None:
             raise NotImplementedError(
@@ -793,7 +834,7 @@ class Oeamdb:
                     ac.level4,
                     ac.level4_description
                     FROM atc_code ac
-                    WHERE ac.who_name IS NOT NULL
+                    WHERE ac.who_name IS NOT NULL AND ac.level4 IS NOT NULL
                     GROUP BY
                     ac.level1,
                     ac.level1_description,
@@ -840,7 +881,7 @@ class Oeamdb:
                     ac.level3,
                     ac.level3_description
                     FROM atc_code ac
-                    WHERE ac.who_name IS NOT NULL
+                    WHERE ac.who_name IS NOT NULL AND ac.level3 IS NOT NULL
                     GROUP BY
                     ac.level1,
                     ac.level1_description,
@@ -879,7 +920,7 @@ class Oeamdb:
                     ac.level2,
                     ac.level2_description
                     FROM atc_code ac
-                    WHERE ac.who_name IS NOT NULL
+                    WHERE ac.who_name IS NOT NULL AND ac.level2 IS NOT NULL
                     GROUP BY
                     ac.level1,
                     ac.level1_description,
@@ -910,7 +951,7 @@ class Oeamdb:
                     ac.level1,
                     ac.level1_description
                     FROM atc_code ac
-                    WHERE ac.who_name IS NOT NULL
+                    WHERE ac.who_name IS NOT NULL AND ac.level1 IS NOT NULL
                     GROUP BY
                     ac.level1,
                     ac.level1_description
@@ -1537,7 +1578,7 @@ class Oeamdb:
                         SELECT
                             ps.product_id,
                             MIN(ps.substance_id) AS substance_id
-                        FROM product_substances ps
+                        FROM product_substance ps
                         GROUP BY ps.product_id
                         HAVING COUNT(ps.substance_id) = 1
                     ),
