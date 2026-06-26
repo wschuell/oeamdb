@@ -37,6 +37,7 @@ import requests
 import pymupdf
 import pymupdf4llm
 import multiprocessing as mp
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -165,16 +166,25 @@ def fetch_and_parse(url, max_attempts=5):
         try:
             r = requests.get(url, timeout=10)
         except requests.RequestException:
-            time.sleep(delay); delay += 1; continue
+            time.sleep(delay) + random.random()
+            if delay > 32:
+                raise
+            delay *= 2
+
         if r.ok:
+            corrupted_pdf = False
+            try:
+                text_content = parse_pdf(r.content)
+            except Exception:
+                corrupted_pdf = True
+                text_content = None
             return {"content": r.content,
-                    "text_content": parse_pdf(r.content),
-                    "download_success": True}
+                    "text_content": text_content,
+                    "download_success": True,
+                    "corrupted_pdf":corrupted_pdf}
         if r.status_code == 404:
             return {"content": None,
-                    "text_content": None, "download_success": False}
-        if r.status_code == 104:
-            time.sleep(delay); delay += 1; continue
+                    "text_content": None, "download_success": False, "corrupted_pdf":None}
         raise IOError(f"Failed download status {r.status_code}: {url}")
     return None
 
@@ -1061,7 +1071,7 @@ class Oeamdb:
 
         query_count = 0
         with sqlite3.connect(
-            self.data_folder / "oeamdb_geloloc.db"
+            self.data_folder / "oeamdb_geoloc.db"
         ) as geoloc_cache_conn, self.engine.connect() as conn:
             geoloc_cache_conn.execute(
                 """
@@ -1381,6 +1391,7 @@ class Oeamdb:
                     content BLOB,
                     text_content TEXT,
                     success BOOL,
+                    corrupted_pdf BOOL,
                     inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """
@@ -1403,29 +1414,34 @@ class Oeamdb:
             ).fetchone()
             if missing_doc:
                 dq = docs_cache_conn.execute(
-                    """SELECT  url,text_content,success FROM document
+                    """SELECT
+                            url,
+                            text_content,
+                            success,
+                            corrupted_pdf
+                        FROM document
                             ;""",
                     )
-                for chunk in chunked(
-                    iterable=({
-                        "url":r[0],
-                        "text_content":r[1],
-                        "success":bool(r[2]),
-                        } for r in dq.fetchall()),
-                    size = 10**3,
+                while (chunk:=[{
+                                        "url":r[0],
+                                        "text_content":r[1],
+                                        "success":bool(r[2]),
+                                        "corrupted_pdf":bool(r[3]),
+                                        } for r in dq.fetchmany(10**2)]
                     ):
                     conn.execute(
                         text("""
                             UPDATE document
                                 SET text_content=:text_content,
-                                download_success=:success
+                                download_success=:success,
+                                corrupted_pdf=:corrupted_pdf
                             WHERE download_success IS NULL
                             AND url=:url
                             ;"""
                             ),
                         chunk
                         )
-                conn.commit()
+                    conn.commit()
 
                 missing_docs_query = conn.execute(
                                     text(
@@ -1458,7 +1474,7 @@ class Oeamdb:
                     n = 0
                     for i, meta, dl_info,err in pool.imap_unordered(_fetch_worker, fetch_tasks):
                         if err is not None:
-                            logger.warning(f"Document {i+1} failed: {err}")
+                            logger.warning(f"Document {i+1} failed: {err} (url: {meta.get('url',None)})")
                             continue
                         if dl_info is None:
                             logger.info(f"Failed/skipped document {i+1}")
@@ -1473,14 +1489,16 @@ class Oeamdb:
                                     valid_since,
                                     doc_type,
                                     product_key,
-                                    success)
+                                    success,
+                                    corrupted_pdf)
                                 SELECT
                                     :url,
                                     :text_content,
                                     :valid_since,
                                     :doc_type,
                                     :product_key,
-                                    :download_success
+                                    :download_success,
+                                    :corrupted_pdf
                                         ;""",
                                 doc_data,
                                 )
@@ -1491,7 +1509,8 @@ class Oeamdb:
                                 """UPDATE document
                             SET
                                     text_content=:text_content,
-                                    download_success=:download_success
+                                    download_success=:download_success,
+                                    corrupted_pdf=:corrupted_pdf
                             FROM product p
                             WHERE p.product_key=:product_key
                                 AND p.id=product_id
@@ -1508,3 +1527,62 @@ class Oeamdb:
                             conn.commit()
                 docs_cache_conn.commit()
                 conn.commit()
+
+
+    def resolve_substance_atc(self):
+        with self.engine.connect() as conn:
+            for query in [
+                ("""
+                    WITH single_subst AS (
+                        SELECT
+                            ps.product_id,
+                            MIN(ps.substance_id) AS substance_id
+                        FROM product_substances ps
+                        GROUP BY ps.product_id
+                        HAVING COUNT(ps.substance_id) = 1
+                    ),
+                    prod_atc AS (
+                        SELECT
+                            pa.product_id,
+                            COALESCE(MIN(a.level5),a.atc_code) AS level5
+                        FROM product_atc pa
+                        INNER JOIN atc_code a ON a.atc_code = pa.atc_code
+                        GROUP BY pa.product_id,a.atc_code
+                    )
+                    INSERT INTO substance_atc
+                        (substance_id,
+                        atc_code,
+                        notes
+                        )
+                    SELECT
+                        ss.substance_id AS id,
+                        pa.level5,
+                        'Product '||p.product_key||' has only one substance.'
+                    FROM product p
+                    INNER JOIN single_subst ss ON ss.product_id = p.id
+                    INNER JOIN prod_atc   pa ON pa.product_id = p.id
+                    ON CONFLICT DO NOTHING
+                    ;"""),
+
+                ("""
+                    INSERT INTO substance_atc
+                        (substance_id,
+                        atc_code,
+                        notes
+                        )
+                    SELECT s.id,
+                        COALESCE(a.level5,a.atc_code),
+                        'ATC code and substance name are matching'
+                    FROM atc_code a
+                    INNER JOIN substance s
+                        ON UPPER(a.who_name) = s.name_en
+                    ON CONFLICT DO NOTHING
+                    ;"""),
+
+                # ("""
+                #     ;"""),
+
+                ]:
+                conn.execute(text(query))
+                conn.commit()
+

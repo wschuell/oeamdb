@@ -55,28 +55,6 @@ class Company(Base):
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
 
 
-# class OldProduct(Base):
-#     """
-#     Product class
-#     """
-#     __tablename__ = "old_product"
-
-#     id = Column(Integer, primary_key=True)
-#     product_key = Column(String, unique=True)
-#     inserted_at = Column(DateTime, server_default=func.current_timestamp())
-#     updated_at = Column(DateTime, server_default=func.current_timestamp())
-#     name = Column(String)
-#     shortage = Column(Boolean)
-#     approval_holder = Column(ForeignKey(Company.id))
-#     requires_prescription = Column(Boolean)
-#     mrp_dcp = Column(String)
-#     human_usage = Column(Boolean)
-#     vet_usage = Column(Boolean)
-#     orig_category = Column(String)
-#     category = Column(String)
-#     approval_date = Column(Date)
-
-
 class Product(Base):
     """
     Product class
@@ -172,6 +150,19 @@ class ProductATC(Base):
     atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
 
 
+class SubstanceATC(Base):
+
+    """
+    SubstanceATC class
+    """
+
+    __tablename__ = "substance_atc"
+
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    substance_id = Column(ForeignKey(Substance.id), primary_key=True)
+    atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
+    notes = Column(String)
+
 class Document(Base):
     """
     Document class
@@ -186,6 +177,7 @@ class Document(Base):
     valid_since = Column(Date)
     text_content = Column(String)
     download_success = Column(Boolean)
+    corrupted_pdf = Column(Boolean)
 
     __table_args__ = (
         UniqueConstraint(
@@ -221,9 +213,34 @@ class Course(Base):
     level = Column(String)
     semester = Column(String)
     title = Column(String)
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
 
     __table_args__ = (
         UniqueConstraint("title", "level", "semester", name="course_constraint"),
+    )
+
+
+class CourseMaterial(Base):
+    """
+    CourseMaterial class
+    """
+
+    __tablename__ = "course_material"
+    id = Column(Integer, primary_key=True)
+    course_id = Column(ForeignKey(Course.id))
+    raw_info = Column(JSON().with_variant(JSONB, "postgresql"))
+    submitted_by = Column(String)
+    taught_by = Column(String)
+    level = Column(String)
+    semester = Column(String)
+    title = Column(String)
+    atc_code = Column(ForeignKey(ATCCode.atc_code))
+    substance_id = Column(ForeignKey(Substance.id))
+    product_id = Column(ForeignKey(Product.id))
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+
+    __table_args__ = (
+        UniqueConstraint("course_id", "raw_info", name="course_mat_constraint"),
     )
 
 
