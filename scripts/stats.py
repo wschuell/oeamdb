@@ -1,24 +1,13 @@
 from enum import Enum, auto
 from sqlalchemy import text
-
-
-def to_scalar(rows):
-    return rows[0][0] if rows else None
-
-
-def to_list(rows):
-    return [r[0] for r in rows] if rows else None
-
-
-def to_dict(rows):
-    return {r[0]: r[1] for r in rows} if rows else None
-
+import json
 
 def collect_stats(stats_engine, stats_queries: dict[str, str]):
     res = dict()
     with engine.connect() as conn:
         for name, (q_parser, sql) in stats_queries.items():
-            res[name] = q_parser(conn.execute(text(sql)).fetchall())
+            q_res = list(conn.execute(text(sql)).fetchone())
+            res[name] = None if q_res is None else q_parser(*q_res)
     return res
 
 
@@ -27,35 +16,246 @@ if __name__ == "__main__":
     from sqlalchemy import create_engine
 
     stats_queries = {
-        "n_sub": (
-            to_scalar,
+        "geoloc": (
+            lambda x,y: {"total":x,"covered":y,"coverage":y*1./max(x,1.)},
             """
-                  SELECT COUNT(*) from substance
-                  """,
+                   SELECT COUNT(*),COUNT(address) FROM company
+                   ;""",
         ),
-        "n_geloc": (
-            to_scalar,
+        "substances": (
+            lambda tot,sm,ss,c,cp: {"total":tot,
+                "with_smiles":sm,
+                "with_smiles_ratio":sm/(max(1.,tot)),
+                "with_smiles_or_seq":sm,
+                "with_smiles_or_seq_ratio":ss/(max(1.,tot)),
+                "with_chemblid":c,
+                "with_chemblid_ratio":c/(max(1.,tot)),
+                "with_chembl_or_pubchemid":cp,
+                "with_chembl_or_pubchemid_ratio":cp/(max(1.,tot)),
+                } ,
             """
-                   SELECT COUNT(address) FROM public.company
-                   """,
+                         SELECT COUNT(*),
+                         COUNT(canonical_smiles),
+                         COUNT(
+                            COALESCE(canonical_smiles,
+                                CASE struct_type
+                                    WHEN 'SEQ' THEN 'SEQ'
+                                    ELSE NULL END)
+                                ),
+                         COUNT(chembl_id),
+                         COUNT(COALESCE(chembl_id,pubchem_cid,pubchem_sid))
+                         FROM substance
+                         ;""",
         ),
-        "n_sub_struct": (
-            to_scalar,
+        "substances_atc": (
+            lambda tot,a,a5,a4,a3,a2: {"total":tot,
+                "with_atc":a,
+                "with_atc_ratio":a/(max(1.,tot)),
+                "with_atc5":a5,
+                "with_atc5_ratio":a5/(max(1.,tot)),
+                "with_atc4":a4,
+                "with_atc4_ratio":a4/(max(1.,tot)),
+                "with_atc3":a3,
+                "with_atc3_ratio":a3/(max(1.,tot)),
+                "with_atc2":a2,
+                "with_atc2_ratio":a2/(max(1.,tot)),
+                } ,
             """
-                         SELECT COUNT(*) FROM public.substance
-                         WHERE canonical_smiles IS NOT NULL OR struct_type = 'SEQ'
-                         """,
+                    SELECT
+                        COUNT(*) AS total,
+                        COUNT(
+                                CASE WHEN atc>0 THEN 1
+                                ELSE NULL
+                            END) AS with_atc,
+                        COUNT(
+                                CASE WHEN atc5>0 THEN 1
+                                ELSE NULL
+                            END) AS with_atc5,
+                        COUNT(
+                                CASE WHEN atc4>0 THEN 1
+                                ELSE NULL
+                            END) AS with_atc4,
+                        COUNT(
+                                CASE WHEN atc3>0 THEN 1
+                                ELSE NULL
+                            END) AS with_atc3,
+                        COUNT(
+                                CASE WHEN atc2>0 THEN 1
+                                ELSE NULL
+                            END) AS with_atc2
+                    FROM (
+                         SELECT
+                            s.id,
+                            COUNT(sa.atc_code) as atc,
+                            COUNT(
+                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=7 THEN 1
+                                ELSE NULL
+                            END
+                                ) as atc5,
+                            COUNT(
+                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=5 THEN 1
+                                ELSE NULL
+                            END
+                                ) as atc4,
+                            COUNT(
+                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=4 THEN 1
+                                ELSE NULL
+                            END
+                                ) as atc3,
+                            COUNT(
+                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=3 THEN 1
+                                ELSE NULL
+                            END
+                                ) as atc2
+                         FROM substance s
+                         LEFT OUTER JOIN substance_atc sa
+                         ON s.id = sa.substance_id
+                         GROUP BY s.id
+                        )
+                         ;""",
         ),
-        "n_sub_DBid": (
-            to_scalar,
+        "product_atc_substance": (
+            lambda prod,patc,patc_lk,patcs_lk: {
+                "products":prod,
+                "products_with_atc":patc,
+                "products_with_atc_ratio":patc/max(1.,prod),
+                "products_atc_links":patc_lk,
+                "products_atc_substance_links":patcs_lk,
+                "products_atc_substance_links_ratio":patcs_lk/max(-1.,patc_lk),
+                },
             """
-                       SELECT COUNT(*) FROM public.substance s
-                       WHERE COALESCE(pubchem_cid, pubchem_sid, chembl_id) IS NOT NULL
-                       """,
+                       SELECT
+                            (SELECT COUNT(*) FROM product) AS products,
+                            (SELECT COUNT(DISTINCT product_id)
+                                FROM product_atc pa) AS products_with_atc,
+                             (SELECT COUNT(*) FROM
+                                (SELECT DISTINCT product_id,
+                                    COALESCE(ac.level5,
+                                        ac.atc_code) AS atc_code
+                                    FROM product_atc pa
+                                    INNER JOIN atc_code ac
+                                    ON ac.atc_code =pa.atc_code)
+                                ) AS p_atc_links,
+                             (SELECT COUNT(*) FROM
+                                ( SELECT p.id AS product_id, ac2.atc_code
+                                    FROM product p
+                                    INNER JOIN product_atc pa
+                                        ON pa.product_id = p.id
+                                    INNER JOIN atc_code ac
+                                        ON pa.atc_code = ac.atc_code
+                                    INNER JOIN atc_code ac2
+                                        ON ac2.atc_code = COALESCE(
+                                            ac.level5,
+                                            ac.atc_code)
+                                    INNER JOIN substance_atc sa
+                                        ON sa.atc_code = ac.atc_code
+                                    INNER JOIN substance s
+                                        ON s.id = sa.substance_id
+                                UNION
+                                    SELECT p.id, ac2.atc_code
+                                    FROM product p
+                                    INNER JOIN product_atc pa
+                                        ON pa.product_id = p.id
+                                    INNER JOIN atc_code ac
+                                        ON pa.atc_code = ac.atc_code
+                                    INNER JOIN atc_code ac2
+                                        ON ac2.atc_code = COALESCE(
+                                            ac.level5,
+                                            ac.atc_code)
+                                    INNER JOIN substance_atc sa
+                                        ON sa.atc_code = ac2.atc_code
+                                    INNER JOIN substance s
+                                        ON s.id = sa.substance_id)
+                                ) AS p_atc_s_links
+                       ;""",
+        ),
+        "ATC": (
+            lambda  a1,
+                    a1_missing,
+                    a1_deleted,
+                    a2,
+                    a2_missing,
+                    a2_deleted,
+                    a3,
+                    a3_missing,
+                    a3_deleted,
+                    a4,
+                    a4_missing,
+                    a4_deleted,
+                    a5,
+                    a5_missing,
+                    a5_deleted,
+                    : {
+                    "a1":a1,
+                    "a1_missing":a1_missing,
+                    "a1_deleted":a1_deleted,
+                    "a1_coverage":(a1-a1_missing)/max(1.,a1),
+                    "a2":a2,
+                    "a2_missing":a2_missing,
+                    "a2_deleted":a2_deleted,
+                    "a2_coverage":(a2-a2_missing)/max(1.,a2),
+                    "a3":a3,
+                    "a3_missing":a3_missing,
+                    "a3_deleted":a3_deleted,
+                    "a3_coverage":(a3-a3_missing)/max(1.,a3),
+                    "a4":a4,
+                    "a4_missing":a4_missing,
+                    "a4_deleted":a4_deleted,
+                    "a4_coverage":(a4-a4_missing)/max(1.,a4),
+                    "a5":a5,
+                    "a5_missing":a5_missing,
+                    "a5_deleted":a5_deleted,
+                    "a5_coverage":(a5-a5_missing)/max(1.,a5),
+                },
+            """
+                       SELECT
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=1) AS a1,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=1
+                            AND level1 IS NULL) AS a1_missing,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=1
+                            AND level5='deleted') AS a1_deleted,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=3) AS a2,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=3
+                            AND level2 IS NULL) AS a2_missing,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=3
+                            AND level5='deleted') AS a2_deleted,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=4) AS a3,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=4
+                            AND level3 IS NULL) AS a3_missing,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=4
+                            AND level5='deleted') AS a3_deleted,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=5) AS a4,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=5
+                            AND level4 IS NULL) AS a4_missing,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)=5
+                            AND level5='deleted') AS a4_deleted,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)>=7) AS a5,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)>=7
+                            AND level5 IS NULL) AS a5_missing,
+                        (SELECT COUNT(*) FROM atc_code
+                            WHERE CHAR_LENGTH(atc_code)>=7
+                            AND level5='deleted') AS a5_deleted
+            ;""",
         ),
     }
 
     POSTGRES_USER = os.environ.get("PYTEST_POSTGRES_USER", "postgres")
     url = f"postgresql+psycopg://{POSTGRES_USER}@localhost:5432/_test_oeamdb_{POSTGRES_USER}"
     engine = create_engine(url)
-    print(collect_stats(engine, stats_queries))
+    stats_result = collect_stats(engine, stats_queries)
+
+    print(json.dumps(stats_result,indent=4))
