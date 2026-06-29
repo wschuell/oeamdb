@@ -40,6 +40,8 @@ import multiprocessing as mp
 import random
 import datetime
 
+from .stats import collect_stats
+
 logger = logging.getLogger(__name__)
 
 def _fetch_worker(args):
@@ -303,6 +305,9 @@ class Oeamdb:
             self.workers = max(1,mp.cpu_count()-1)
         else:
             self.workers = workers
+
+    def get_stats(self):
+        return collect_stats(engine=self.engine)
 
     def download_basg(self, force=False):
         bdl = BasgDownloader(data_folder=self.data_folder)

@@ -56,3 +56,12 @@ def test_categories(testengine, persistent_tmp_path):
         / "test_data"
         / "category.json"
         )
+
+def test_stats(testengine, persistent_tmp_path):
+    db = oeamdb.Oeamdb(
+        engine=testengine,
+        data_folder=persistent_tmp_path / "basg_dl",
+        max_geoloc_queries=5,
+        max_pubchem_queries=10,
+    )
+    db.get_stats()

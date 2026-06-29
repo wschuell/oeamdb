@@ -1,21 +1,9 @@
-from enum import Enum, auto
-from sqlalchemy import text
+from sqlalchemy import text, create_engine
 import json
-
-def collect_stats(stats_engine, stats_queries: dict[str, str]):
-    res = dict()
-    with engine.connect() as conn:
-        for name, (q_parser, sql) in stats_queries.items():
-            q_res = list(conn.execute(text(sql)).fetchone())
-            res[name] = None if q_res is None else q_parser(*q_res)
-    return res
+import os
 
 
-if __name__ == "__main__":
-    import os
-    from sqlalchemy import create_engine
-
-    stats_queries = {
+STATS_QUERIES = {
         "geoloc": (
             lambda x,y: {"total":x,"covered":y,"coverage":y*1./max(x,1.)},
             """
@@ -253,9 +241,11 @@ if __name__ == "__main__":
         ),
     }
 
-    POSTGRES_USER = os.environ.get("PYTEST_POSTGRES_USER", "postgres")
-    url = f"postgresql+psycopg://{POSTGRES_USER}@localhost:5432/_test_oeamdb_{POSTGRES_USER}"
-    engine = create_engine(url)
-    stats_result = collect_stats(engine, stats_queries)
 
-    print(json.dumps(stats_result,indent=4))
+def collect_stats(engine, stats_queries: dict[str, str]):
+    res = dict()
+    with engine.connect() as conn:
+        for name, (q_parser, sql) in stats_queries.items():
+            q_res = list(conn.execute(text(sql)).fetchone())
+            res[name] = None if q_res is None else q_parser(*q_res)
+    return res
