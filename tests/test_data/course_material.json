@@ -1,0 +1,55 @@
+[
+    {
+        "level": "M1",
+        "title": "Pharma1",
+        "taught_by": "ProfA",
+        "semester": "W2025"
+    },
+    {
+        "level": "M1",
+        "title": "Pharma2",
+        "taught_by": "ProfA",
+        "semester": "W2025",
+        "substances":
+        [
+            "INSULIN",
+            "IBUPROFEN"
+        ]
+    },
+    {
+        "level": "M2",
+        "title": "Chemistry1",
+        "taught_by": "ProfA",
+        "semester": "S2026",
+        "submitted_by": "test",
+        "substances":
+        [
+            "INSULIN",
+            "IODINE",
+            "SULFUR (HOM)"
+        ]
+    },
+    {
+        "level": "M1",
+        "title": "Pharma2",
+        "taught_by": "ProfA",
+        "semester": "W2025",
+        "atc_codes":
+        [
+            "A",
+            "N02CX09",
+            "N02CD04"
+        ]
+    },
+    {
+        "level": "M1",
+        "title": "Pharma2",
+        "taught_by": "ProfA",
+        "semester": "W2025",
+        "products":
+        [
+            "137946",
+            "14079"
+        ]
+    }
+]

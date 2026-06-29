@@ -38,6 +38,7 @@ import pymupdf
 import pymupdf4llm
 import multiprocessing as mp
 import random
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -197,12 +198,17 @@ class Importer:
         param_processor=None,
         autocommit=True,
         param_split=False,
+        bindparams=None,
     ):
         self.chunk_size = chunk_size
         self.query = query
         self.param_processor = param_processor
         self.param_split = param_split
         self.autocommit = autocommit
+        if bindparams is None:
+            self.bindparams = []
+        else:
+            self.bindparams = copy.deepcopy(bindparams)
 
     def import_all(self, engine, params):
         with engine.connect() as conn:
@@ -224,13 +230,13 @@ class Importer:
     def import_chunk(self, conn, params):
         if isinstance(self.query, str):
             conn.execute(
-                text(self.query),
+                text(self.query).bindparams(*self.bindparams),
                 params,
             )
         elif isinstance(self.query, list):
             for q in self.query:
                 conn.execute(
-                    text(q),
+                    text(q).bindparams(*self.bindparams),
                     params,
                 )
         else:
@@ -499,6 +505,7 @@ class Oeamdb:
                 "human_usage": data["Verwendung"] == "Human",
                 "vet_usage": data["Verwendung"] == "Veterinär",
                 "category": data["Arzneimittelkategorie"],
+                "raw_info": data,
             }
 
             if self.filter_vet and not processed_data["human_usage"]:
@@ -550,20 +557,28 @@ class Oeamdb:
                             name,
                             human_usage,
                             vet_usage,
-                            orig_category
+                            orig_category,
+                            raw_info
                             )
                     SELECT CAST(:product_key AS TEXT),
                             :approval_date,
                             :name,
                             :human_usage,
                             :vet_usage,
-                            :category
+                            :category,
+                            :raw_info
                     WHERE NOT EXISTS (
                         SELECT 1 FROM product
                         WHERE product_key=:product_key)
                     ;""",
                 param_processor=param_processor,
                 param_split=True,
+                bindparams=[bindparam(
+                                "raw_info",
+                                type_=JSON(
+                                    none_as_null=True
+                                ),
+                            )]
             ),
             Importer(
                 query="""
@@ -965,9 +980,13 @@ class Oeamdb:
             )
             conn.commit()
 
-    def get_atc_corrections(self, force=False):
-        filepath = self.data_folder / "atc_corrections_fhi.no.json"
-        if not filepath.exists() or force:
+    def get_atc_corrections(self,filepath=None, official=True, force=False):
+        if filepath is None:
+            if official:
+                filepath = self.data_folder / "atc_corrections_fhi.no.json"
+            else:
+                raise ValueError("Value expected for arg filepath for method get_atc_corrections")
+        if official and (not filepath.exists() or force):
             r = requests.get("https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",timeout=5)
 
             soup = BeautifulSoup(r.content,"html.parser")
@@ -1085,6 +1104,172 @@ class Oeamdb:
                 ),
             )
             conn.commit()
+
+    def import_category_corrections(self,filepath):
+        with filepath.open(mode="r") as f:
+            category_corrections = json.load(f)
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                            UPDATE product
+                            SET category=:category
+                            WHERE product_key=:product_key
+                            ;
+                            """
+                ),
+                category_corrections,
+            )
+            conn.commit()
+
+    def import_course_material(self,
+            filepath: "Path|list[Path]",
+            replace=False,
+            ref_time=None,
+        ):
+        if not isinstance(filepath,list):
+            filepath = [filepath]
+        course_material = []
+        for fp in filepath:
+            with fp.open(mode="r") as f:
+                course_material += json.load(f)
+        if ref_time is None:
+            ref_time = datetime.datetime.now()
+
+        def course_processor(data):
+            ans = {
+                "taught_by":data["taught_by"],
+                "semester":data["semester"],
+                "level":data["level"],
+                "title":data["title"],
+                "ref_time":ref_time,
+                "submitted_by":data.get("submitted_by",None),
+            }
+            return ans
+
+        def cm_processor(data):
+            course_data = course_processor(data)
+            substances = data.get("substances",[])
+            if not isinstance(substances,list):
+                substances = [substances]
+            atc_codes = data.get("atc_codes",[])
+            if not isinstance(atc_codes,list):
+                atc_codes = [atc_codes]
+            products = data.get("products",[])
+            if not isinstance(products,list):
+                products = [products]
+            global_ans = []
+            for s in substances:
+                ans = {"link_type":"substance",
+                        "link_id":s,
+                        }
+                ans.update(course_data)
+                yield ans
+                # global_ans.append(ans)
+            for p in products:
+                ans = {"link_type":"product",
+                        "link_id":p,
+                        }
+                ans.update(course_data)
+                # global_ans.append(ans)
+                yield ans
+            for a in atc_codes:
+                ans = {"link_type":"atc_code",
+                        "link_id":a,
+                        }
+                ans.update(course_data)
+                # global_ans.append(ans)
+                yield ans
+
+
+        importers = [
+            Importer(
+                query="""
+                INSERT INTO course(
+                    taught_by,
+                    semester,
+                    level,
+                    title,
+                    updated_at
+                    )
+                SELECT
+                    :taught_by,
+                    :semester,
+                    :level,
+                    :title,
+                    :ref_time
+                ON CONFLICT (title,level,semester)
+                DO UPDATE SET
+                    updated_at=EXCLUDED.updated_at,
+                    taught_by=EXCLUDED.taught_by
+                ;""",
+                param_processor=course_processor,
+            ),
+            Importer(
+                query="""
+                INSERT INTO course_material(
+                    course_id,
+                    submitted_by,
+                    link_type,
+                    link_id,
+                    updated_at,
+                    substance_id,
+                    product_id,
+                    atc_code
+                    )
+                SELECT
+                    c.id,
+                    :submitted_by,
+                    :link_type,
+                    :link_id,
+                    :ref_time,
+                    s.id,
+                    p.id,
+                    a.atc_code
+                FROM course c
+                LEFT OUTER JOIN substance s
+                ON :link_type='substance' AND s.name_en=:link_id
+                LEFT OUTER JOIN product p
+                ON :link_type='product' AND p.product_key=:link_id
+                LEFT OUTER JOIN atc_code a
+                ON :link_type='atc_code' AND a.atc_code=:link_id
+                WHERE c.semester=:semester
+                    AND c.level=:level
+                    AND c.title=:title
+                ON CONFLICT (course_id,link_type,link_id)
+                DO UPDATE SET
+                    updated_at=EXCLUDED.updated_at,
+                    substance_id=EXCLUDED.substance_id,
+                    product_id=EXCLUDED.product_id,
+                    atc_code=EXCLUDED.atc_code,
+                    submitted_by=EXCLUDED.submitted_by
+                ;""",
+                param_processor=cm_processor,
+                param_split=True,
+            ),
+            ]
+        for importer in importers:
+            importer.import_all(engine=self.engine, params=course_material)
+
+        if replace:
+            with self.engine.connect() as conn:
+                conn.execute(text(
+                    """
+                    DELETE FROM course_material
+                        WHERE updated_at<:ref_time
+                    ;"""
+                    ),
+                {"ref_time":ref_time}
+                    )
+                conn.execute(text(
+                    """
+                    DELETE FROM course
+                        WHERE updated_at<:ref_time
+                    ;"""
+                    ),
+                {"ref_time":ref_time}
+                    )
+                conn.commit()
 
 
     def resolve_chembl(self):
@@ -1300,8 +1485,8 @@ class Oeamdb:
 
                     else:
                         delay = time.time() - last_query
-                        if delay < 0.5:
-                            time.sleep(delay)
+                        if delay < 1:
+                            time.sleep(1 + random.random())
                         comp = pcp.get_compounds(s,"name")
                         query_count += 1
                         last_query = time.time()

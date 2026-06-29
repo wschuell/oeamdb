@@ -77,6 +77,7 @@ class Product(Base):
     category = Column(String)
     approval_date = Column(Date)
     atc_code = Column(String)
+    raw_info = Column(JSON().with_variant(JSONB, "postgresql"))
 
 
 class Substance(Base):
@@ -251,9 +252,11 @@ class Course(Base):
     semester = Column(String)
     title = Column(String)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
 
     __table_args__ = (
         UniqueConstraint("title", "level", "semester", name="course_constraint"),
+        Index("course_uat_idx",updated_at),
     )
 
 
@@ -265,7 +268,8 @@ class CourseMaterial(Base):
     __tablename__ = "course_material"
     id = Column(Integer, primary_key=True)
     course_id = Column(ForeignKey(Course.id))
-    raw_info = Column(JSON().with_variant(JSONB, "postgresql"))
+    link_id = Column(String)
+    link_type = Column(String)
     submitted_by = Column(String)
     taught_by = Column(String)
     level = Column(String)
@@ -274,10 +278,15 @@ class CourseMaterial(Base):
     atc_code = Column(ForeignKey(ATCCode.atc_code))
     substance_id = Column(ForeignKey(Substance.id))
     product_id = Column(ForeignKey(Product.id))
+    source_file = Column(String)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
 
     __table_args__ = (
-        UniqueConstraint("course_id", "raw_info", name="course_mat_constraint"),
+        UniqueConstraint(
+            "course_id", "link_type", "link_id",
+            name="course_mat_constraint"),
+        Index("course_mat_uat_idx",updated_at),
     )
 
 
@@ -291,6 +300,7 @@ class CategoryCorrection(Base):
     submitted_by = Column(String)
     submitted_at = Column(DateTime)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
     new_category = Column(String)
 
 
