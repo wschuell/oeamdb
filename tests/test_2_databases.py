@@ -37,8 +37,8 @@ def test_import(testengine, persistent_tmp_path):
         data_folder=persistent_tmp_path / "basg_dl",
         max_geoloc_queries=3,
     )
-    db.import_all()
-
+    db.download_basg()
+    db.import_basg()
 
 def test_reimport(testengine, persistent_tmp_path):
     db = oeamdb.Oeamdb(
@@ -46,7 +46,18 @@ def test_reimport(testengine, persistent_tmp_path):
         data_folder=persistent_tmp_path / "basg_dl",
         max_geoloc_queries=3,
     )
-    db.import_all()
+
+    db.download_basg()
+    db.import_basg()
+
+def test_geolocate(testengine, persistent_tmp_path):
+    db = oeamdb.Oeamdb(
+        engine=testengine,
+        data_folder=persistent_tmp_path / "basg_dl",
+        max_docs_queries=3,
+    )
+
+    db.geolocate()
 
 def test_docs(testengine, persistent_tmp_path):
     db = oeamdb.Oeamdb(

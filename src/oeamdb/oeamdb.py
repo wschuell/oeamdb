@@ -270,6 +270,7 @@ class Oeamdb:
         max_geoloc_queries=None,
         geolocator=None,
         max_pubchem_queries=None,
+        max_chembl_queries=None,
         max_docs_queries=None,
         workers=None,
         commit_batch=100,
@@ -299,6 +300,7 @@ class Oeamdb:
             self.locator = geolocator
         self.geocode = RateLimiter(self.locator.geocode, min_delay_seconds=1.5)
         self.max_pubchem_queries = max_pubchem_queries
+        self.max_chembl_queries = max_chembl_queries
         self.max_docs_queries = max_docs_queries
         self.commit_batch = commit_batch
         if workers is None:
@@ -336,6 +338,15 @@ class Oeamdb:
         self.download_basg()
         self.import_basg()
         self.geolocate()
+        self.resolve_docs()
+        self.get_chembl_atc_info()
+        self.get_chembl_mol_info()
+        self.resolve_chembl()
+        self.get_chembl_mol_atc()
+        self.resolve_pubchem()
+        self.get_atc_corrections()
+        self.apply_atc_corrections()
+        self.resolve_substance_atc()
 
     def import_basg(self):
         self.import_basg_csv()
