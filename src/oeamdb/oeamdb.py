@@ -39,7 +39,9 @@ import pymupdf4llm
 import multiprocessing as mp
 import random
 
+
 logger = logging.getLogger(__name__)
+
 
 def _fetch_worker(args):
     i, meta = args
@@ -49,6 +51,7 @@ def _fetch_worker(args):
     except Exception as e:
         # return a plain string, never the live exception/traceback
         return i, meta, None, f"{type(e).__name__}: {e}"
+
 
 def compute_hash(text_data: str | bytes) -> str:
     return xxhash.xxh3_64(text_data).hexdigest()
@@ -123,23 +126,27 @@ def match_lists(en, de, product_key):
     same = set(en) & set(dec)
     for e in same:
         pairs.append(
-                {
-                    "name_en": e,
-                    "name_de": e,
-                    "product_key": product_key,
-                }
-            )
+            {
+                "name_en": e,
+                "name_de": e,
+                "product_key": product_key,
+            }
+        )
         enc.remove(e)
         dec.remove(e)
         n -= 1
         m -= 1
 
     while n < m:
-        _, d = max([(min([(levenshtein(d, e), e) for e in enc]), d) for d in dec])
+        _, d = max(
+            [(min([(levenshtein(d, e), e) for e in enc]), d) for d in dec]
+        )
         enc.append(d)
         n += 1
     while n > m:
-        _, e = max([(min([(levenshtein(d, e), d) for d in dec]), e) for e in enc])
+        _, e = max(
+            [(min([(levenshtein(d, e), d) for d in dec]), e) for e in enc]
+        )
         dec.append(e)
         m += 1
     for d in dec:
@@ -155,10 +162,12 @@ def match_lists(en, de, product_key):
         enc.remove(e)
     return pairs
 
+
 def parse_pdf(content: bytes, embed_images: bool = True):
     doc = pymupdf.open(stream=content, filetype="pdf")
     md = pymupdf4llm.to_markdown(doc, embed_images=embed_images)
     return md
+
 
 def fetch_and_parse(url, max_attempts=5):
     delay = 1
@@ -178,13 +187,19 @@ def fetch_and_parse(url, max_attempts=5):
             except Exception:
                 corrupted_pdf = True
                 text_content = None
-            return {"content": r.content,
-                    "text_content": text_content,
-                    "download_success": True,
-                    "corrupted_pdf":corrupted_pdf}
+            return {
+                "content": r.content,
+                "text_content": text_content,
+                "download_success": True,
+                "corrupted_pdf": corrupted_pdf,
+            }
         if r.status_code == 404:
-            return {"content": None,
-                    "text_content": None, "download_success": False, "corrupted_pdf":None}
+            return {
+                "content": None,
+                "text_content": None,
+                "download_success": False,
+                "corrupted_pdf": None,
+            }
         raise IOError(f"Failed download status {r.status_code}: {url}")
     return None
 
@@ -294,7 +309,7 @@ class Oeamdb:
         self.max_docs_queries = max_docs_queries
         self.commit_batch = commit_batch
         if workers is None:
-            self.workers = max(1,mp.cpu_count()-1)
+            self.workers = max(1, mp.cpu_count() - 1)
         else:
             self.workers = workers
 
@@ -307,7 +322,8 @@ class Oeamdb:
         if not hasattr(self, "engine"):
             if self.engine_url.startswith("sqlite:"):
                 connect_args = {
-                    "detect_types": sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+                    "detect_types": sqlite3.PARSE_DECLTYPES
+                    | sqlite3.PARSE_COLNAMES
                 }
             else:
                 connect_args = {}
@@ -334,7 +350,9 @@ class Oeamdb:
         filepath = self.data_folder / "basg.json"
         filehash = compute_filehash(filepath)
 
-        skip = check_hash(engine=self.engine, filehash=filehash, filepath=filepath)
+        skip = check_hash(
+            engine=self.engine, filehash=filehash, filepath=filepath
+        )
 
         if skip and not force:
             return
@@ -462,7 +480,9 @@ class Oeamdb:
             importer.import_all(engine=self.engine, params=json_content)
 
         if not skip:
-            register_hash(engine=self.engine, filehash=filehash, filepath=filepath)
+            register_hash(
+                engine=self.engine, filehash=filehash, filepath=filepath
+            )
 
         if self.enforce_data_check:
             with self.engine.connect() as conn:
@@ -483,7 +503,9 @@ class Oeamdb:
     def import_basg_csv(self, force=False):
         filepath = self.data_folder / "basg.csv"
         filehash = compute_filehash(filepath)
-        skip = check_hash(engine=self.engine, filehash=filehash, filepath=filepath)
+        skip = check_hash(
+            engine=self.engine, filehash=filehash, filepath=filepath
+        )
         if skip and not force:
             return
 
@@ -606,7 +628,9 @@ class Oeamdb:
             importer.import_all(engine=self.engine, params=csv_content)
 
         if not skip:
-            register_hash(engine=self.engine, filehash=filehash, filepath=filepath)
+            register_hash(
+                engine=self.engine, filehash=filehash, filepath=filepath
+            )
 
     def get_chembl_mol_info(self):
         if self.chembl_engine is None:
@@ -655,10 +679,14 @@ class Oeamdb:
                             """
                 )
             )
+
             def split_synonyms(mol_dict_list):
                 previous_molreg = None
                 for m in mol_dict_list:
-                    if m["molregno"] is None or m["molregno"] != previous_molreg:
+                    if (
+                        m["molregno"] is None
+                        or m["molregno"] != previous_molreg
+                    ):
                         yield m
                         previous_molreg = m["molregno"]
                     if m["synonyms"] is not None:
@@ -968,34 +996,40 @@ class Oeamdb:
     def get_atc_corrections(self, force=False):
         filepath = self.data_folder / "atc_corrections_fhi.no.json"
         if not filepath.exists() or force:
-            r = requests.get("https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",timeout=5)
+            r = requests.get(
+                "https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",
+                timeout=5,
+            )
 
-            soup = BeautifulSoup(r.content,"html.parser")
-            div_table = soup.find_all("div",attrs={"class":"listtable"})[0]
+            soup = BeautifulSoup(r.content, "html.parser")
+            div_table = soup.find_all("div", attrs={"class": "listtable"})[0]
             rows = [
-                        [(
-                            rr.text.split("\xa0")[0].strip("\n"),
-                            (rr.a["title"].strip("\n") if rr.find("a") else None),
-                            ) for rr in
-                        r.find_all("td")
-                        ]
-                    for r in div_table.find_all("tr")
-                    if len(r.find_all("td"))>1
-                    ]
-            atc_corrections = [{    "submitted_by":None,
-                                    "atc_from":r[0][0],
-                                    "name":r[1][0],
-                                    "atc_to":r[2][0],
-                                    "year":r[3][0],
-                                    "footnotes":
-                                            {
-                                            "footnote_from":r[0][1],
-                                            "footnote_name":r[1][1],
-                                            "footnote_to":r[2][1],
-                                            "footnote_year":r[3][1],
-                                             },
-                                } for r in rows
-                                ]
+                [
+                    (
+                        rr.text.split("\xa0")[0].strip("\n"),
+                        (rr.a["title"].strip("\n") if rr.find("a") else None),
+                    )
+                    for rr in r.find_all("td")
+                ]
+                for r in div_table.find_all("tr")
+                if len(r.find_all("td")) > 1
+            ]
+            atc_corrections = [
+                {
+                    "submitted_by": None,
+                    "atc_from": r[0][0],
+                    "name": r[1][0],
+                    "atc_to": r[2][0],
+                    "year": r[3][0],
+                    "footnotes": {
+                        "footnote_from": r[0][1],
+                        "footnote_name": r[1][1],
+                        "footnote_to": r[2][1],
+                        "footnote_year": r[3][1],
+                    },
+                }
+                for r in rows
+            ]
             with filepath.open(mode="w") as f:
                 f.write(json.dumps(atc_corrections))
         else:
@@ -1025,13 +1059,13 @@ class Oeamdb:
                             ;
                             """
                 ).bindparams(
-                            bindparam(
-                                "footnotes",
-                                type_=JSON(
-                                    none_as_null=True
-                                ),  # ().with_variant(JSONB, "postgresql"),
-                            )
-                        ),
+                    bindparam(
+                        "footnotes",
+                        type_=JSON(
+                            none_as_null=True
+                        ),  # ().with_variant(JSONB, "postgresql"),
+                    )
+                ),
                 atc_corrections,
             )
             conn.commit()
@@ -1086,7 +1120,6 @@ class Oeamdb:
             )
             conn.commit()
 
-
     def resolve_chembl(self):
         with self.engine.connect() as conn:
             conn.execute(
@@ -1102,18 +1135,22 @@ class Oeamdb:
                     struct_type=cm.structure_type
                     FROM chembl_mols AS cm
                     WHERE s.name_en=cm.name
-                    ;"""))
+                    ;"""
+                )
+            )
             conn.commit()
-
 
     def geolocate(self, max_queries=None):
         if max_queries is None:
             max_queries = self.max_geoloc_queries
 
         query_count = 0
-        with sqlite3.connect(
-            self.data_folder / "oeamdb_geoloc.db"
-        ) as geoloc_cache_conn, self.engine.connect() as conn:
+        with (
+            sqlite3.connect(
+                self.data_folder / "oeamdb_geoloc.db"
+            ) as geoloc_cache_conn,
+            self.engine.connect() as conn,
+        ):
             geoloc_cache_conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS company(
@@ -1140,7 +1177,9 @@ class Oeamdb:
             )
             for i, c_info in enumerate(companies):
                 cid, c, c_cnt = c_info
-                logger.info(f"Geolocating address {i+1} (over {c_cnt} total missing)")
+                logger.info(
+                    f"Geolocating address {i + 1} (over {c_cnt} total missing)"
+                )
                 ca = ",".join(c.split(",")[1:]) if "," in c else c
                 gq = geoloc_cache_conn.execute(
                     """SELECT address,latitude,longitude,raw_data,geoloc_success FROM company
@@ -1152,7 +1191,7 @@ class Oeamdb:
                     if max_queries is not None and query_count >= max_queries:
                         loc_data = None
                         logger.info(
-                            f"Skipped address {i+1} (max queries to OSM reached)"
+                            f"Skipped address {i + 1} (max queries to OSM reached)"
                         )
                     else:
                         loc = self.geocode(
@@ -1181,7 +1220,9 @@ class Oeamdb:
                                 "raw_data": None,
                                 "success": False,
                             }
-                            logger.info(f"Failed address {i+1} (OSM return None)")
+                            logger.info(
+                                f"Failed address {i + 1} (OSM return None)"
+                            )
                         geoloc_cache_conn.execute(
                             """INSERT INTO company(full_text,address,latitude,longitude,raw_data,geoloc_success)
                             SELECT
@@ -1214,7 +1255,7 @@ class Oeamdb:
                         "raw_data": raw_data,
                         "success": bool(gq[4]),
                     }
-                    logger.info(f"Retrieved address {i+1} from local cache")
+                    logger.info(f"Retrieved address {i + 1} from local cache")
                 if loc_data:
                     conn.execute(
                         text(
@@ -1238,14 +1279,17 @@ class Oeamdb:
                     )
                     conn.commit()
 
-    def resolve_pubchem(self,max_queries=None):
+    def resolve_pubchem(self, max_queries=None):
         if max_queries is None:
             max_queries = self.max_pubchem_queries
         query_count = 0
         last_query = 0
-        with sqlite3.connect(
-            self.data_folder / "oeamdb_pubchemc.db"
-        ) as pubchem_cache_conn, self.engine.connect() as conn:
+        with (
+            sqlite3.connect(
+                self.data_folder / "oeamdb_pubchemc.db"
+            ) as pubchem_cache_conn,
+            self.engine.connect() as conn,
+        ):
             pubchem_cache_conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS compound(
@@ -1278,7 +1322,9 @@ class Oeamdb:
             )
             for i, s_info in enumerate(missing_smiles):
                 sid, s, s_cnt = s_info
-                logger.info(f"Querying Pubchem element {i+1} (over {s_cnt} total missing SMILES)")
+                logger.info(
+                    f"Querying Pubchem element {i + 1} (over {s_cnt} total missing SMILES)"
+                )
                 sq = pubchem_cache_conn.execute(
                     """SELECT   canonical_smiles,
                                 standard_inchi,
@@ -1295,32 +1341,32 @@ class Oeamdb:
                     if max_queries is not None and query_count >= max_queries:
                         s_data = None
                         logger.info(
-                            f"Skipped element {i+1} (max queries to PubChem reached)"
+                            f"Skipped element {i + 1} (max queries to PubChem reached)"
                         )
 
                     else:
                         delay = time.time() - last_query
                         if delay < 0.5:
                             time.sleep(delay)
-                        comp = pcp.get_compounds(s,"name")
+                        comp = pcp.get_compounds(s, "name")
                         query_count += 1
                         last_query = time.time()
                         if comp:
                             lengths = {
                                 len({cp.canonical_smiles for cp in comp}),
                                 len({cp.inchikey for cp in comp}),
-                                }
+                            }
                             if lengths != {1}:
                                 msg = f"{len(comp)} non-matching elements found for {s}: {comp}"
                                 logger.info(msg)
 
                                 s_data = {
-                                    "search_text":s,
-                                    "pubchem_cid":None,
-                                    "pubchem_sid":None,
-                                    "canonical_smiles":None,
-                                    "standard_inchi":None,
-                                    "standard_inchi_key":None,
+                                    "search_text": s,
+                                    "pubchem_cid": None,
+                                    "pubchem_sid": None,
+                                    "canonical_smiles": None,
+                                    "standard_inchi": None,
+                                    "standard_inchi_key": None,
                                     "raw_data": [cp.record for cp in comp],
                                     "success": False,
                                     "sid": sid,
@@ -1328,29 +1374,31 @@ class Oeamdb:
                             else:
                                 c = comp[0]
                                 s_data = {
-                                    "search_text":s,
-                                    "pubchem_cid":c.cid,
-                                    "pubchem_sid":None,
-                                    "canonical_smiles":c.canonical_smiles,
-                                    "standard_inchi":c.inchi,
-                                    "standard_inchi_key":c.inchikey,
+                                    "search_text": s,
+                                    "pubchem_cid": c.cid,
+                                    "pubchem_sid": None,
+                                    "canonical_smiles": c.canonical_smiles,
+                                    "standard_inchi": c.inchi,
+                                    "standard_inchi_key": c.inchikey,
                                     "raw_data": c.record,
                                     "success": True,
                                     "sid": sid,
                                 }
                         else:
                             s_data = {
-                                "search_text":s,
-                                "pubchem_cid":None,
-                                "pubchem_sid":None,
-                                "canonical_smiles":None,
-                                "standard_inchi":None,
-                                "standard_inchi_key":None,
+                                "search_text": s,
+                                "pubchem_cid": None,
+                                "pubchem_sid": None,
+                                "canonical_smiles": None,
+                                "standard_inchi": None,
+                                "standard_inchi_key": None,
                                 "raw_data": None,
                                 "success": False,
                                 "sid": sid,
                             }
-                            logger.info(f"Failed address {i+1} (OSM return None)")
+                            logger.info(
+                                f"Failed address {i + 1} (OSM return None)"
+                            )
                         pubchem_cache_conn.execute(
                             """INSERT INTO compound(
                                 search_text,
@@ -1385,16 +1433,16 @@ class Oeamdb:
                         case _:
                             raw_data = sq[6]
                     s_data = {
-                                "canonical_smiles": sq[0],
-                                "standard_inchi": sq[1],
-                                "standard_inchi_key": sq[2],
-                                "pubchem_cid": sq[3],
-                                "pubchem_sid": sq[4],
-                                "success": sq[5],
-                                "raw_data": raw_data,
-                                "sid": sid,
+                        "canonical_smiles": sq[0],
+                        "standard_inchi": sq[1],
+                        "standard_inchi_key": sq[2],
+                        "pubchem_cid": sq[3],
+                        "pubchem_sid": sq[4],
+                        "success": sq[5],
+                        "raw_data": raw_data,
+                        "sid": sid,
                     }
-                    logger.info(f"Retrieved element {i+1} from local cache")
+                    logger.info(f"Retrieved element {i + 1} from local cache")
                 if s_data:
                     conn.execute(
                         text(
@@ -1407,21 +1455,22 @@ class Oeamdb:
                                 pubchem_sid=:pubchem_sid
                         WHERE id=:sid
                                 ;"""
-                        )
-                        ,
+                        ),
                         s_data,
                     )
                     conn.commit()
 
-
-    def resolve_docs(self,max_queries=None):
+    def resolve_docs(self, max_queries=None):
         separator = "._."
 
         if max_queries is None:
             max_queries = self.max_docs_queries
-        with sqlite3.connect(
-            self.data_folder / "oeamdb_docs.db"
-        ) as docs_cache_conn, self.engine.connect() as conn:
+        with (
+            sqlite3.connect(
+                self.data_folder / "oeamdb_docs.db"
+            ) as docs_cache_conn,
+            self.engine.connect() as conn,
+        ):
             docs_cache_conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS document(
@@ -1462,14 +1511,16 @@ class Oeamdb:
                             corrupted_pdf
                         FROM document
                             ;""",
-                    )
-                while (chunk:=[{
-                                        "url":r[0],
-                                        "text_content":r[1],
-                                        "success":bool(r[2]),
-                                        "corrupted_pdf":bool(r[3]),
-                                        } for r in dq.fetchmany(10**2)]
-                    ):
+                )
+                while chunk := [
+                    {
+                        "url": r[0],
+                        "text_content": r[1],
+                        "success": bool(r[2]),
+                        "corrupted_pdf": bool(r[3]),
+                    }
+                    for r in dq.fetchmany(10**2)
+                ]:
                     conn.execute(
                         text("""
                             UPDATE document
@@ -1478,15 +1529,14 @@ class Oeamdb:
                                 corrupted_pdf=:corrupted_pdf
                             WHERE download_success IS NULL
                             AND url=:url
-                            ;"""
-                            ),
-                        chunk
-                        )
+                            ;"""),
+                        chunk,
+                    )
                     conn.commit()
 
                 missing_docs_query = conn.execute(
-                                    text(
-                                        """SELECT
+                    text(
+                        """SELECT
                                             d.url,
                                             d.valid_since,
                                             p.product_key,
@@ -1497,34 +1547,39 @@ class Oeamdb:
                                             ON p.id=d.product_id
                                          WHERE download_success IS NULL
                                                 """
-                                    )
-                                )
+                    )
+                )
                 missing_docs = [
-                    (i,dict(d._mapping))
-                    for (i,d) in enumerate(missing_docs_query.fetchall())
-                    ]
-
+                    (i, dict(d._mapping))
+                    for (i, d) in enumerate(missing_docs_query.fetchall())
+                ]
 
                 if max_queries is not None and len(missing_docs) > max_queries:
                     fetch_tasks = missing_docs[:max_queries]
-                    logger.info(f"Skipping {len(missing_docs)} documents (to stay below max downloads)")
+                    logger.info(
+                        f"Skipping {len(missing_docs)} documents (to stay below max downloads)"
+                    )
                 else:
                     fetch_tasks = missing_docs
 
                 with mp.Pool(self.workers) as pool:
                     n = 0
-                    for i, meta, dl_info,err in pool.imap_unordered(_fetch_worker, fetch_tasks):
+                    for i, meta, dl_info, err in pool.imap_unordered(
+                        _fetch_worker, fetch_tasks
+                    ):
                         if err is not None:
-                            logger.warning(f"Document {i+1} failed: {err} (url: {meta.get('url',None)})")
+                            logger.warning(
+                                f"Document {i + 1} failed: {err} (url: {meta.get('url', None)})"
+                            )
                             continue
                         if dl_info is None:
-                            logger.info(f"Failed/skipped document {i+1}")
+                            logger.info(f"Failed/skipped document {i + 1}")
                             continue
                         doc_data = {**meta, **dl_info}
 
                         # SQLite cache write (parent owns the connection)
                         docs_cache_conn.execute(
-                                """INSERT INTO document(
+                            """INSERT INTO document(
                                     url,
                                     text_content,
                                     valid_since,
@@ -1541,8 +1596,8 @@ class Oeamdb:
                                     :download_success,
                                     :corrupted_pdf
                                         ;""",
-                                doc_data,
-                                )
+                            doc_data,
+                        )
 
                         # main DB update
                         conn.execute(
@@ -1558,10 +1613,9 @@ class Oeamdb:
                                 AND valid_since=:valid_since
                                 AND doc_type=:doc_type
                                     ;"""
-                            )
-                            ,
+                            ),
                             doc_data,
-                            )
+                        )
                         n += 1
                         if n % self.commit_batch == 0:
                             docs_cache_conn.commit()
@@ -1569,11 +1623,11 @@ class Oeamdb:
                 docs_cache_conn.commit()
                 conn.commit()
 
-
     def resolve_substance_atc(self):
         with self.engine.connect() as conn:
             for query in [
-                ("""
+                (
+                    """
                     WITH single_subst AS (
                         SELECT
                             ps.product_id,
@@ -1603,9 +1657,10 @@ class Oeamdb:
                     INNER JOIN single_subst ss ON ss.product_id = p.id
                     INNER JOIN prod_atc   pa ON pa.product_id = p.id
                     ON CONFLICT DO NOTHING
-                    ;"""),
-
-                ("""
+                    ;"""
+                ),
+                (
+                    """
                     INSERT INTO substance_atc
                         (substance_id,
                         atc_code,
@@ -1618,12 +1673,195 @@ class Oeamdb:
                     INNER JOIN substance s
                         ON UPPER(a.who_name) = s.name_en
                     ON CONFLICT DO NOTHING
-                    ;"""),
-
+                    ;"""
+                ),
                 # ("""
                 #     ;"""),
-
-                ]:
+            ]:
                 conn.execute(text(query))
                 conn.commit()
 
+    def import_old_univie_xlsx(self, force=False):
+        """
+        old univie file import
+        """
+        filepath = (
+            self.data_folder
+            / "2025-06 AT zugelassene arzneistoffe - uebersicht.xlsx"
+        )
+        filehash = compute_filehash(filepath)
+
+        skip = check_hash(
+            engine=self.engine, filehash=filehash, filepath=filepath
+        )
+        if skip and not force:
+            return
+
+        with filepath.open(mode="rb") as f:
+            df = pl.read_excel(
+                f, read_options={"header_row": 2, "skip_rows": 4}
+            )
+            xlsx_content = list(df.iter_rows(named=True))
+
+        def passes_vet(data):
+            return (not self.filter_vet) or data["Verwendung"] == "Human"
+
+        def product_processor(data):
+            if not passes_vet(data):
+                return []
+            approval_date = data["Zulassungsdatum"]
+            if isinstance(approval_date, str) and approval_date:
+                approval_date = approval_date[:10]
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "atc_code": data["ATC Code"],
+                    "approval_date": approval_date,
+                    "human_usage": data["Verwendung"] == "Human",
+                    "vet_usage": data["Verwendung"] == "Veterin\u00e4r",
+                    "orig_category": data["orig_Arzneimittelkategorie"],
+                    "category": (
+                        data["Arzneimittelkategorie"]
+                        if data["Arzneimittelkategorie"]
+                        != data["orig_Arzneimittelkategorie"]
+                        else None
+                    ),
+                }
+            ]
+
+        def substance_processor(data):
+            if not passes_vet(data):
+                return []
+            wirkstoff = data["Wirkstoff_SplitResultList"]
+            inn = data["INN"]
+            if wirkstoff is None and inn is None:
+                return []
+            cid = data["PubChem CID"]
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "name_de": wirkstoff.upper() if wirkstoff else None,
+                    "name_en": inn.upper() if inn else None,
+                    "pubchem_cid": str(cid) if cid is not None else None,
+                    "canonical_smiles": data["SMILES (Pubchem)"],
+                }
+            ]
+
+        def atc_processor(data):
+            if not passes_vet(data):
+                return []
+            code = data["ATC Code"]
+            if code is None:
+                return []
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "atc_code": code.strip(" "),
+                }
+            ]
+
+        importers = [
+            # products
+            Importer(
+                query="""
+                        INSERT INTO product(
+                                product_key,
+                                approval_date,
+                                human_usage,
+                                vet_usage,
+                                orig_category,
+                                atc_code,
+                                category
+                
+                                )
+                        SELECT CAST(:product_key AS TEXT),
+                                :approval_date,
+                                :human_usage,
+                                :vet_usage,
+                                :orig_category,
+                                :atc_code,
+                                :category
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM product
+                            WHERE product_key=:product_key)
+                        ;""",
+                param_processor=product_processor,
+                param_split=True,
+            ),
+            # substances
+            Importer(
+                query="""
+                INSERT INTO substance(name_de, name_en, pubchem_cid, canonical_smiles)
+                SELECT CAST(:name_de AS TEXT),
+                CAST(:name_en AS TEXT),
+                CAST(:pubchem_cid AS TEXT),
+                CAST(:canonical_smiles AS TEXT)
+                FROM product p
+                WHERE p.product_key=:product_key
+                AND NOT EXISTS (
+                SELECT 1 FROM substance
+                WHERE name_en=CAST(:name_en AS TEXT)
+                )
+                        ;""",
+                param_processor=substance_processor,
+                param_split=True,
+            ),
+            # backfill chem data
+            Importer(
+                query="""
+                        UPDATE substance
+                        SET pubchem_cid=COALESCE(pubchem_cid, :pubchem_cid),
+                            canonical_smiles=COALESCE(
+                                canonical_smiles, :canonical_smiles
+                            )
+                        WHERE name_en=:name_en
+                        AND (pubchem_cid IS NULL OR canonical_smiles IS NULL)
+                        ;""",
+                param_processor=substance_processor,
+                param_split=True,
+            ),
+            # product <-> substance link
+            Importer(
+                query="""
+                        INSERT INTO product_substances(product_id,substance_id)
+                        SELECT p.id,s.id
+                        FROM product p
+                        INNER JOIN substance s
+                        ON p.product_key=:product_key
+                        AND s.name_en=:name_en
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=substance_processor,
+                param_split=True,
+            ),
+            # atc dictionary
+            Importer(
+                query="""
+                        INSERT INTO atc_code(atc_code)
+                        SELECT :atc_code
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=atc_processor,
+                param_split=True,
+            ),
+            # product <-> atc link
+            Importer(
+                query="""
+                        INSERT INTO product_atc(product_id,atc_code)
+                        SELECT p.id,:atc_code
+                        FROM product p
+                        WHERE p.product_key=:product_key
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=atc_processor,
+                param_split=True,
+            ),
+        ]
+
+        for importer in importers:
+            importer.import_all(engine=self.engine, params=xlsx_content)
+
+        if not skip:
+            register_hash(
+                engine=self.engine, filehash=filehash, filepath=filepath
+            )
