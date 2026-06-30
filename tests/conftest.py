@@ -48,3 +48,14 @@ def testengine(request,shared_tmp_path):
     else:
         url= f"{request.param}:///_test_oeamdb.{request.param}"
     return create_engine(url)
+
+@pytest.fixture(params=dbtype_list,scope="session")
+def testengine_fromfile(request,shared_tmp_path):
+    if request.param in ['sqlite','duckdb']:
+        db_path = shared_tmp_path / f"_test_oeamdb_fromfile.{request.param}.db"
+        url = f"{request.param}:///{db_path.as_posix()}"
+    elif request.param =="postgres":
+        url= f"postgresql+psycopg://{POSTGRES_USER}@localhost:5432/_test_oeamdb_fromfile_{POSTGRES_USER}"
+    else:
+        url= f"{request.param}:///_test_oeamdb_fromfile.{request.param}"
+    return create_engine(url)

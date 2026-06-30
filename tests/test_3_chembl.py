@@ -15,7 +15,7 @@ def test_chembl(testengine, persistent_tmp_path, chembl_engine):
         max_geoloc_queries=3,
     )
     if chembl_engine is None:
-        return
+        pytest.skip()
     db.get_chembl_atc_info()
     db.get_chembl_mol_info()
     db.resolve_chembl()

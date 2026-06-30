@@ -13,13 +13,13 @@ STATS_QUERIES = {
         "substances": (
             lambda tot,sm,ss,c,cp: {"total":tot,
                 "with_smiles":sm,
-                "with_smiles_ratio":sm/(max(1.,tot)),
+                "with_smiles_ratio":1. if tot==0 else sm/(max(1.,tot)),
                 "with_smiles_or_seq":sm,
-                "with_smiles_or_seq_ratio":ss/(max(1.,tot)),
+                "with_smiles_or_seq_ratio":1. if tot==0 else ss/(max(1.,tot)),
                 "with_chemblid":c,
-                "with_chemblid_ratio":c/(max(1.,tot)),
+                "with_chemblid_ratio":1. if tot==0 else c/(max(1.,tot)),
                 "with_chembl_or_pubchemid":cp,
-                "with_chembl_or_pubchemid_ratio":cp/(max(1.,tot)),
+                "with_chembl_or_pubchemid_ratio":1. if tot==0 else cp/(max(1.,tot)),
                 } ,
             """
                          SELECT COUNT(*),
@@ -38,15 +38,15 @@ STATS_QUERIES = {
         "substances_atc": (
             lambda tot,a,a5,a4,a3,a2: {"total":tot,
                 "with_atc":a,
-                "with_atc_ratio":a/(max(1.,tot)),
+                "with_atc_ratio":1. if tot==0 else a/(max(1.,tot)),
                 "with_atc5":a5,
-                "with_atc5_ratio":a5/(max(1.,tot)),
+                "with_atc5_ratio":1. if tot==0 else a5/(max(1.,tot)),
                 "with_atc4":a4,
-                "with_atc4_ratio":a4/(max(1.,tot)),
+                "with_atc4_ratio":1. if tot==0 else a4/(max(1.,tot)),
                 "with_atc3":a3,
-                "with_atc3_ratio":a3/(max(1.,tot)),
+                "with_atc3_ratio":1. if tot==0 else a3/(max(1.,tot)),
                 "with_atc2":a2,
-                "with_atc2_ratio":a2/(max(1.,tot)),
+                "with_atc2_ratio":1. if tot==0 else a2/(max(1.,tot)),
                 } ,
             """
                     SELECT
@@ -106,10 +106,10 @@ STATS_QUERIES = {
             lambda prod,patc,patc_lk,patcs_lk: {
                 "products":prod,
                 "products_with_atc":patc,
-                "products_with_atc_ratio":patc/max(1.,prod),
+                "products_with_atc_ratio":1. if prod==0 else patc/max(1.,prod),
                 "products_atc_links":patc_lk,
                 "products_atc_substance_links":patcs_lk,
-                "products_atc_substance_links_ratio":patcs_lk/max(-1.,patc_lk),
+                "products_atc_substance_links_ratio":1. if patc_lk==0 else patcs_lk/max(-1.,patc_lk),
                 },
             """
                        SELECT
@@ -177,23 +177,23 @@ STATS_QUERIES = {
                     "a1":a1,
                     "a1_missing":a1_missing,
                     "a1_deleted":a1_deleted,
-                    "a1_coverage":(a1-a1_missing)/max(1.,a1),
+                    "a1_coverage":1. if a1==0 else (a1-a1_missing)/max(1.,a1),
                     "a2":a2,
                     "a2_missing":a2_missing,
                     "a2_deleted":a2_deleted,
-                    "a2_coverage":(a2-a2_missing)/max(1.,a2),
+                    "a2_coverage":1. if a2==0 else (a2-a2_missing)/max(1.,a2),
                     "a3":a3,
                     "a3_missing":a3_missing,
                     "a3_deleted":a3_deleted,
-                    "a3_coverage":(a3-a3_missing)/max(1.,a3),
+                    "a3_coverage":1. if a3==0 else (a3-a3_missing)/max(1.,a3),
                     "a4":a4,
                     "a4_missing":a4_missing,
                     "a4_deleted":a4_deleted,
-                    "a4_coverage":(a4-a4_missing)/max(1.,a4),
+                    "a4_coverage":1. if a4==0 else (a4-a4_missing)/max(1.,a4),
                     "a5":a5,
                     "a5_missing":a5_missing,
                     "a5_deleted":a5_deleted,
-                    "a5_coverage":(a5-a5_missing)/max(1.,a5),
+                    "a5_coverage":1. if a5==0 else (a5-a5_missing)/max(1.,a5),
                 },
             """
                        SELECT
@@ -242,7 +242,7 @@ STATS_QUERIES = {
     }
 
 
-def collect_stats(engine, stats_queries: dict[str, str]):
+def collect_stats(engine, stats_queries: dict[str, str]=STATS_QUERIES):
     res = dict()
     with engine.connect() as conn:
         for name, (q_parser, sql) in stats_queries.items():

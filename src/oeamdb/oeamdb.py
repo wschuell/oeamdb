@@ -39,6 +39,7 @@ import pymupdf4llm
 import multiprocessing as mp
 import random
 import datetime
+import re
 
 from .stats import collect_stats
 
@@ -98,6 +99,23 @@ def register_hash(engine, filehash, filepath):
         )
         conn.commit()
 
+PATTERN = r"^(?P<level>[A-Za-z])(?P<semester>\d{1,2}) (?P<title>[\w ]+)$"
+
+
+def consecutive_pattern_columns(
+    df: pl.DataFrame,
+    pattern: str = PATTERN,
+) -> list[tuple[str, re.Match]]:
+    """First run of consecutive columns matching `pattern`, with the match objects."""
+    regex = re.compile(pattern)
+    run: list[tuple[str, re.Match]] = []
+    for col in df.columns:
+        m = regex.match(col)
+        if m:
+            run.append((col, m))
+        elif run:
+            break
+    return run
 
 def match_lists(en, de, product_key):
     """
@@ -345,6 +363,9 @@ class Oeamdb:
         self.get_chembl_mol_atc()
         self.resolve_pubchem()
         self.get_atc_corrections()
+        self.get_atc_corrections(filepath=Path(__file__).parent
+            / "data"
+            / "atc_corr.json")
         self.apply_atc_corrections()
         self.resolve_substance_atc()
 
@@ -1828,3 +1849,283 @@ class Oeamdb:
                 conn.execute(text(query))
                 conn.commit()
 
+    def from_file(self,
+        filepath: Path,
+        force: bool = False,
+        file_type: "str|None" = None,
+        header_row: int=2,
+        skip_rows: int=0,
+        ) -> None:
+        """
+        Full DB reconstruct from flat file spreadsheet
+        """
+        filehash = compute_filehash(filepath)
+
+        skip = check_hash(
+            engine=self.engine, filehash=filehash, filepath=filepath
+        )
+        if skip and not force:
+            return
+
+        if file_type is None:
+            file_type = filepath.suffix
+        file_type = file_type.strip(".")
+
+        if file_type == "xlsx":
+            with filepath.open(mode="rb") as f:
+                df = pl.read_excel(
+                    f, read_options={
+                    "header_row":header_row,
+                    "skip_rows":skip_rows,
+                    },
+                    infer_schema_length=100_000,
+                    # try_parse_dates=True,
+                )
+        elif file_type == "csv":
+            with filepath.open(mode="rb") as f:
+                df = pl.read_csv(
+                    f,
+                    skip_rows=header_row, # skip rows before header: 2
+                    has_header=True,
+                    skip_rows_after_header=skip_rows, # skip rows after hdr: 4
+                    infer_schema_length=100_000,
+                    # try_parse_dates=True,
+                )
+        else:
+            msg = f"File extension unsupported: {file_type}"
+            raise NotImplementedError(msg)
+
+        df = df.with_columns(
+            pl.coalesce(
+            pl.col("Zulassungsdatum").str.to_date("%d/%m/%Y", strict=False),
+            pl.col("Zulassungsdatum").str.to_date("%Y-%m-%d", strict=False),
+            ).alias("Zulassungsdatum")
+        )
+        file_content = list(df.iter_rows(named=True))
+
+        def passes_vet(data):
+            return (not self.filter_vet) or data["Verwendung"] == "Human"
+
+        def product_processor(data):
+            # if not passes_vet(data):
+            #     return []
+            approval_date = data["Zulassungsdatum"]
+            if isinstance(approval_date, str) and approval_date:
+                approval_date = approval_date[:10]
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "atc_code": data["ATC Code"],
+                    "approval_date": approval_date,
+                    "human_usage": data["Verwendung"] == "Human",
+                    "vet_usage": data["Verwendung"] == "Veterin\u00e4r",
+                    "orig_category": data["orig_Arzneimittelkategorie"],
+                    "category": (
+                        data["Arzneimittelkategorie"]
+                        if data["Arzneimittelkategorie"]
+                        != data["orig_Arzneimittelkategorie"]
+                        else None
+                    ),
+                }
+            ]
+
+        def substance_processor(data):
+            # if not passes_vet(data):
+            #     return []
+            wirkstoff = data["Wirkstoff_SplitResultList"]
+            inn = data["INN"] if data["INN"] is not None else wirkstoff
+            if wirkstoff is None and inn is None:
+                return []
+            cid = data["PubChem CID"]
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "name_de": wirkstoff.upper() if wirkstoff else None,
+                    "name_en": inn.upper() if inn else None,
+                    "pubchem_cid": str(cid) if cid is not None else None,
+                    "canonical_smiles": data["SMILES (Pubchem)"],
+                }
+            ]
+
+        def atc_processor(data):
+            # if not passes_vet(data):
+            #     return []
+            code = data["ATC Code"]
+            wirkstoff = data["Wirkstoff_SplitResultList"]
+            inn = data["INN"] if data["INN"] is not None else wirkstoff
+            if code is None:
+                return []
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "atc_code": c.strip(" "),
+                    "name_en": inn.upper() if inn else None,
+                    "name_de": wirkstoff.upper() if wirkstoff else None,
+                } for c in code.replace(",",";").upper().split(";")
+            ]
+
+        def course_processor(df):
+            course_dict = {}
+            for col, m in consecutive_pattern_columns(df):
+                d = m.groupdict()
+                prof_list = []
+                for p in df[col].drop_nulls().unique().to_list():
+                    if p:
+                        for pp in p.split("/"):
+                            if pp.strip(" \xa0"):
+                                prof_list.append(
+                                    pp.strip(" \xa0")
+                                    )
+                d["taught_by_list"] = sorted(set(prof_list))
+                d["taught_by"] = "/".join(d["taught_by_list"])
+                d["colname"] = col
+                course_dict[col] = d
+            return course_dict
+
+        def course_mat_processor(data):
+            # if not passes_vet(data):
+            #     return []
+            code = data["ATC Code"]
+            wirkstoff = data["Wirkstoff_SplitResultList"]
+            inn = data["INN"] if data["INN"] is not None else wirkstoff
+            if code is None:
+                return []
+            return [
+                {
+                    "product_key": data["Zulassungsnummer"],
+                    "atc_code": c.strip(" "),
+                    "name_en": inn.upper() if inn else None,
+                    "name_de": wirkstoff.upper() if wirkstoff else None,
+                } for c in code.replace(",",";").upper().split(";")
+            ]
+
+        importers = [
+            # products
+            Importer(
+                query="""
+                        INSERT INTO product(
+                                product_key,
+                                approval_date,
+                                human_usage,
+                                vet_usage,
+                                orig_category,
+                                atc_code,
+                                category
+                                )
+                        SELECT CAST(:product_key AS TEXT),
+                                :approval_date,
+                                :human_usage,
+                                :vet_usage,
+                                :orig_category,
+                                :atc_code,
+                                :category
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM product
+                            WHERE product_key=:product_key)
+                        ;""",
+                param_processor=product_processor,
+                param_split=True,
+            ),
+            # substances
+            Importer(
+                query="""
+                INSERT INTO substance(name_de, name_en, pubchem_cid, canonical_smiles)
+                SELECT CAST(:name_de AS TEXT),
+                CAST(:name_en AS TEXT),
+                CAST(:pubchem_cid AS TEXT),
+                CAST(:canonical_smiles AS TEXT)
+                FROM product p
+                WHERE p.product_key=:product_key
+                AND NOT EXISTS (
+                SELECT 1 FROM substance
+                WHERE name_en=CAST(:name_en AS TEXT)
+                )
+                        ;""",
+                param_processor=substance_processor,
+                param_split=True,
+            ),
+            # backfill chem data
+            Importer(
+                query="""
+                        UPDATE substance
+                        SET pubchem_cid=COALESCE(pubchem_cid, :pubchem_cid),
+                            canonical_smiles=COALESCE(
+                                canonical_smiles, :canonical_smiles
+                            )
+                        WHERE name_en=:name_en
+                        AND (pubchem_cid IS NULL OR canonical_smiles IS NULL)
+                        ;""",
+                param_processor=substance_processor,
+                param_split=True,
+            ),
+            # product <-> substance link
+            Importer(
+                query="""
+                        INSERT INTO product_substances(product_id,substance_id)
+                        SELECT p.id,s.id
+                        FROM product p
+                        INNER JOIN substance s
+                        ON p.product_key=:product_key
+                        AND s.name_en=:name_en
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=substance_processor,
+                param_split=True,
+            ),
+            # atc dictionary
+            Importer(
+                query="""
+                        INSERT INTO atc_code(atc_code)
+                        SELECT :atc_code
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=atc_processor,
+                param_split=True,
+            ),
+            # product <-> atc link
+            Importer(
+                query="""
+                        INSERT INTO product_atc(product_id,atc_code)
+                        SELECT p.id,:atc_code
+                        FROM product p
+                        WHERE p.product_key=:product_key
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=atc_processor,
+                param_split=True,
+            ),
+            # substance <-> atc link
+            Importer(
+                query="""
+                        INSERT INTO substance_atc(substance_id,atc_code)
+                        SELECT s.id,:atc_code
+                        FROM substance s
+                        WHERE s.name_en=:name_en
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=atc_processor,
+                param_split=True,
+            ),
+        ]
+
+        # course
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(
+                """
+                        INSERT INTO course(level,title,semester,taught_by)
+                        SELECT :level,:title,:semester,:taught_by
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                    ),
+                list(course_processor(df).values()),
+                )
+            conn.commit()
+
+        for importer in importers:
+            importer.import_all(engine=self.engine, params=file_content)
+
+        if not skip:
+            register_hash(
+                engine=self.engine, filehash=filehash, filepath=filepath
+            )

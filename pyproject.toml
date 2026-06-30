@@ -35,6 +35,7 @@ dependencies = [
     "beautifulsoup4",
     "requests",
     "pymupdf4llm",
+    "fastexcel",
 ]
 description = "Gathering official pharmaceutical products list for Austria, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]
