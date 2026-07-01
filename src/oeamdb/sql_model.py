@@ -46,6 +46,7 @@ class Stats(Base):
     id = Column(Integer, primary_key=True)
     inserted_at = Column(DateTime, server_default=func.current_timestamp())
     stats_info = Column(JSON().with_variant(JSONB, "postgresql"))
+    stats_info_text = Column(String)
 
 class Company(Base):
     """

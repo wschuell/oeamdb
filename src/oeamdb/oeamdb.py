@@ -331,13 +331,14 @@ class Oeamdb:
         if commit:
             with self.engine.connect() as conn:
                 conn.execute(text("""
-                    INSERT INTO _stats(stats_info)
+                    INSERT INTO _stats(stats_info, stats_info_text)
                     SELECT :stats_info
                     """).bindparams(bindparam(
                                 "stats_info",
                                 type_=JSON(
                                     none_as_null=True
-                                ),)),{"stats_info":ans})
+                                ),)),{"stats_info":ans,
+                                    "stats_info_text":json.dumps(ans,indent=4)})
                 conn.commit()
         return ans
 
