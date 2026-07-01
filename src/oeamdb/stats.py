@@ -76,22 +76,22 @@ STATS_QUERIES = {
                             s.id,
                             COUNT(sa.atc_code) as atc,
                             COUNT(
-                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=7 THEN 1
+                                CASE WHEN LENGTH(sa.atc_code)>=7 THEN 1
                                 ELSE NULL
                             END
                                 ) as atc5,
                             COUNT(
-                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=5 THEN 1
+                                CASE WHEN LENGTH(sa.atc_code)>=5 THEN 1
                                 ELSE NULL
                             END
                                 ) as atc4,
                             COUNT(
-                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=4 THEN 1
+                                CASE WHEN LENGTH(sa.atc_code)>=4 THEN 1
                                 ELSE NULL
                             END
                                 ) as atc3,
                             COUNT(
-                                CASE WHEN CHAR_LENGTH(sa.atc_code)>=3 THEN 1
+                                CASE WHEN LENGTH(sa.atc_code)>=3 THEN 1
                                 ELSE NULL
                             END
                                 ) as atc2
@@ -198,44 +198,44 @@ STATS_QUERIES = {
             """
                        SELECT
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=1) AS a1,
+                            WHERE LENGTH(atc_code)=1) AS a1,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=1
+                            WHERE LENGTH(atc_code)=1
                             AND level1 IS NULL) AS a1_missing,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=1
+                            WHERE LENGTH(atc_code)=1
                             AND level5='deleted') AS a1_deleted,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=3) AS a2,
+                            WHERE LENGTH(atc_code)=3) AS a2,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=3
+                            WHERE LENGTH(atc_code)=3
                             AND level2 IS NULL) AS a2_missing,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=3
+                            WHERE LENGTH(atc_code)=3
                             AND level5='deleted') AS a2_deleted,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=4) AS a3,
+                            WHERE LENGTH(atc_code)=4) AS a3,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=4
+                            WHERE LENGTH(atc_code)=4
                             AND level3 IS NULL) AS a3_missing,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=4
+                            WHERE LENGTH(atc_code)=4
                             AND level5='deleted') AS a3_deleted,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=5) AS a4,
+                            WHERE LENGTH(atc_code)=5) AS a4,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=5
+                            WHERE LENGTH(atc_code)=5
                             AND level4 IS NULL) AS a4_missing,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)=5
+                            WHERE LENGTH(atc_code)=5
                             AND level5='deleted') AS a4_deleted,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)>=7) AS a5,
+                            WHERE LENGTH(atc_code)>=7) AS a5,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)>=7
+                            WHERE LENGTH(atc_code)>=7
                             AND level5 IS NULL) AS a5_missing,
                         (SELECT COUNT(*) FROM atc_code
-                            WHERE CHAR_LENGTH(atc_code)>=7
+                            WHERE LENGTH(atc_code)>=7
                             AND level5='deleted') AS a5_deleted
             ;""",
         ),

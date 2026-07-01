@@ -36,6 +36,16 @@ class File(Base):
     name = Column(String)
     filehash = Column(String, unique=True)
 
+class Stats(Base):
+    """
+    Stats class
+    """
+
+    __tablename__ = "_stats"
+
+    id = Column(Integer, primary_key=True)
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    stats_info = Column(JSON().with_variant(JSONB, "postgresql"))
 
 class Company(Base):
     """

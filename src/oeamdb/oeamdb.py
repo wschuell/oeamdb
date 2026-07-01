@@ -326,8 +326,20 @@ class Oeamdb:
         else:
             self.workers = workers
 
-    def get_stats(self):
-        return collect_stats(engine=self.engine)
+    def get_stats(self,commit=True):
+        ans = collect_stats(engine=self.engine)
+        if commit:
+            with self.engine.connect() as conn:
+                conn.execute(text("""
+                    INSERT INTO _stats(stats_info)
+                    SELECT :stats_info
+                    """).bindparams(bindparam(
+                                "stats_info",
+                                type_=JSON(
+                                    none_as_null=True
+                                ),)),{"stats_info":ans})
+                conn.commit()
+        return ans
 
     def download_basg(self, force=False):
         bdl = BasgDownloader(data_folder=self.data_folder)
