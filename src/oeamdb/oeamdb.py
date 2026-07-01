@@ -1982,22 +1982,53 @@ class Oeamdb:
                 course_dict[col] = d
             return course_dict
 
+        all_courses = course_processor(df=df)
+
         def course_mat_processor(data):
             # if not passes_vet(data):
             #     return []
-            code = data["ATC Code"]
             wirkstoff = data["Wirkstoff_SplitResultList"]
             inn = data["INN"] if data["INN"] is not None else wirkstoff
-            if code is None:
-                return []
-            return [
-                {
-                    "product_key": data["Zulassungsnummer"],
-                    "atc_code": c.strip(" "),
-                    "name_en": inn.upper() if inn else None,
-                    "name_de": wirkstoff.upper() if wirkstoff else None,
-                } for c in code.replace(",",";").upper().split(";")
-            ]
+            courses = []
+            for cr in all_courses.values():
+                if (data[cr["colname"]] is not None
+                    and
+                    data[cr["colname"]] not in (""," ","\xa0")):
+                    courses.append(cr)
+
+            if data["ATC Code"] is not None:
+                atc_codes = [ ac.strip(" ")
+                    for ac in
+                    data["ATC Code"].replace(",",";").upper().split(";")
+                    ]
+            else:
+                atc_codes = []
+            ans = []
+            for c in courses:
+                base = {
+                "submitted_by":data[c["colname"]],
+                **c
+                }
+                ans.append({
+                "link_type": "substance",
+                "link_id": inn.upper() if inn else None,
+                    **base
+                    }
+                    )
+                ans.append({
+                "link_type": "product",
+                "link_id": data["Zulassungsnummer"],
+                    **base
+                    }
+                    )
+                for ac in atc_codes:
+                    ans.append({
+                        "link_type": "atc_code",
+                        "link_id": ac,
+                        **base
+                        }
+                        )
+            return ans
 
         importers = [
             # products
@@ -2104,6 +2135,46 @@ class Oeamdb:
                         ON CONFLICT DO NOTHING
                         ;""",
                 param_processor=atc_processor,
+                param_split=True,
+            ),
+            # course material
+            Importer(
+                query="""
+                INSERT INTO course_material(
+                    course_id,
+                    submitted_by,
+                    link_type,
+                    link_id,
+                    substance_id,
+                    product_id,
+                    atc_code
+                    )
+                SELECT
+                    c.id,
+                    :submitted_by,
+                    :link_type,
+                    :link_id,
+                    s.id,
+                    p.id,
+                    a.atc_code
+                FROM course c
+                LEFT OUTER JOIN substance s
+                ON :link_type='substance' AND s.name_en=:link_id
+                LEFT OUTER JOIN product p
+                ON :link_type='product' AND p.product_key=:link_id
+                LEFT OUTER JOIN atc_code a
+                ON :link_type='atc_code' AND a.atc_code=:link_id
+                WHERE c.semester=:semester
+                    AND c.level=:level
+                    AND c.title=:title
+                ON CONFLICT (course_id,link_type,link_id)
+                DO UPDATE SET
+                    substance_id=EXCLUDED.substance_id,
+                    product_id=EXCLUDED.product_id,
+                    atc_code=EXCLUDED.atc_code,
+                    submitted_by=EXCLUDED.submitted_by
+                        ;""",
+                param_processor=course_mat_processor,
                 param_split=True,
             ),
         ]
