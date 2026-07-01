@@ -55,6 +55,7 @@ def test_geolocate(testengine, persistent_tmp_path):
         engine=testengine,
         data_folder=persistent_tmp_path / "basg_dl",
         max_docs_queries=3,
+        max_geoloc_queries=3,
     )
 
     db.geolocate()
