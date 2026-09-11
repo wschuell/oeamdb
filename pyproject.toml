@@ -36,6 +36,7 @@ dependencies = [
     "requests",
     "pymupdf4llm",
     "fastexcel",
+    "chembl-downloader",
 ]
 description = "Gathering official pharmaceutical products list for Austria, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]
@@ -61,6 +62,13 @@ publishing = [
     "build",
     "twine",
     "wheel",
+]
+
+[project.optional-dependencies]
+web = [
+    "fastapi",
+    "uvicorn[standard]",
+    "psycopg",
 ]
 
 [project.urls]

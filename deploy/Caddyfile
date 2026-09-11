@@ -1,0 +1,5 @@
+{$DOMAIN} {
+    tls /certs/fullchain.pem /certs/privkey.pem
+    encode zstd gzip
+    reverse_proxy {$API:api:8000}
+}

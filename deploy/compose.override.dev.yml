@@ -1,0 +1,14 @@
+services:
+  api:
+    volumes:
+      - ../src:/app/src:ro
+    command: uvicorn oeamdb.web.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src
+    read_only: false
+    healthcheck:
+      disable: true
+    ports:
+      - "${OEAMDB_WEB_DEVAPI_BIND:-127.0.0.1:8000}:8000"
+
+  oeamdb_create:
+    volumes:
+      - ../src:/app/src:ro

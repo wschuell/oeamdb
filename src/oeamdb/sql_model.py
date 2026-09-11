@@ -156,6 +156,7 @@ class ATCCode(Base):
     __tablename__ = "atc_code"
 
     atc_code = Column(String, primary_key=True)
+    atc_code_short = Column(String)
     who_name = Column(String)
     level1 = Column(String)
     level2 = Column(String)
@@ -301,6 +302,30 @@ class CourseMaterial(Base):
     )
 
 
+class CourseMaterialFullDescr(Base):
+    """
+    CourseMaterialFullDescr class
+    """
+
+    __tablename__ = "course_material_full_descr"
+    course_id = Column(ForeignKey(Course.id),primary_key=True)
+    submitted_by = Column(String, primary_key=True)
+    taught_by = Column(String)
+    level = Column(String)
+    semester = Column(String)
+    title = Column(String)
+    atc_code = Column(ForeignKey(ATCCode.atc_code),primary_key=True)
+    substance_id = Column(ForeignKey(Substance.id),primary_key=True)
+    product_id = Column(ForeignKey(Product.id),primary_key=True)
+    source_file = Column(String)
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
+
+    __table_args__ = (
+        Index("course_mat_full_uat_idx",updated_at),
+    )
+
+
 class CategoryCorrection(Base):
     """
     CategoryCorrection class
@@ -328,3 +353,29 @@ class ATCCorrection(Base):
     old_code = Column(String, primary_key=True)
     new_code = Column(String, primary_key=True)
     footnotes = Column(JSON().with_variant(JSONB, "postgresql"))
+
+class VOUnit(Base):
+    """
+    VOUnit class
+    """
+
+    __tablename__ = "vo_unit"
+    description = Column(String)
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
+    product_id = Column(ForeignKey(Product.id), primary_key=True)
+    substance_id = Column(ForeignKey(Substance.id), primary_key=True)
+    atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
+
+class NotInMReason(Base):
+    """
+    NotInMReason class
+    """
+
+    __tablename__ = "not_in_m_reason"
+    reason = Column(String)
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
+    product_id = Column(ForeignKey(Product.id), primary_key=True)
+    substance_id = Column(ForeignKey(Substance.id), primary_key=True)
+    atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)

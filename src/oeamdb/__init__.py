@@ -2,8 +2,7 @@
 
 import importlib
 import logging
-
-# logging.getLogger(__name__).addHandler(logging.NullHandler())
+import os
 
 __author__ = "William Schueller"
 __email__ = "william.schueller@gmail.com"
@@ -17,6 +16,16 @@ _LAZY_IMPORTS = {
 
 from . import sql_adapters
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# Only add the StreamHandler if the env var is NOT set to '1'
+if os.environ.get("SILENCE_OEAMDB_LOGS","0") != "1":
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
 def __getattr__(name):
     """

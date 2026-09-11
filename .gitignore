@@ -70,3 +70,6 @@ venv.bak/
 
 
 **/.pymon
+
+**/*.pem
+**/certs

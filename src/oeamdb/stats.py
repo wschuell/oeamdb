@@ -249,3 +249,37 @@ def collect_stats(engine, stats_queries: dict[str, str]=STATS_QUERIES):
             q_res = list(conn.execute(text(sql)).fetchone())
             res[name] = None if q_res is None else q_parser(*q_res)
     return res
+
+
+def extract_cm(engine):
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+with agg1 as (
+select
+c."level" ,
+c.semester,
+c.title ,
+cm.submitted_by as taught_by,
+cm.link_type,
+count(*) as cnt,
+jsonb_agg(cm.link_id) as links
+from course c
+inner join course_material cm
+on c.id=cm.course_id
+group by c."level" ,
+c.semester,
+c.title ,
+cm.submitted_by,
+cm.link_type),
+agg2 as (
+select jsonb_build_object(
+        'level', level,
+        'semester', semester,
+        'title', title,
+        link_type ||'s', links
+    ) as data
+from agg1)
+select jsonb_agg(data) from agg2
+;
+            """))
+        return json.loads(result.fetchone()[0])

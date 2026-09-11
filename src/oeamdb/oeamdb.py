@@ -7,6 +7,7 @@ from sqlalchemy import (
     text,
     JSON,
     bindparam,
+    inspect,
 )
 
 from sqlalchemy.dialects.postgresql import JSONB
@@ -40,6 +41,7 @@ import multiprocessing as mp
 import random
 import datetime
 import re
+import chembl_downloader
 
 from .stats import collect_stats
 
@@ -292,13 +294,17 @@ class Oeamdb:
         max_docs_queries=None,
         workers=None,
         commit_batch=100,
+        create_metadata: bool=True,
+        chembl_download: bool=False,
+        chembl_version: int|None = None,
     ):
         self.engine_url = engine_url
         if engine is not None:
             self.engine = engine
         else:
             self.init_engine()
-        self.sql_base.metadata.create_all(self.engine, checkfirst=True)
+        if create_metadata:
+            self.sql_base.metadata.create_all(self.engine, checkfirst=True)
 
         if data_folder is None:
             self.data_folder = Path.home() / ".oeamdb_data"
@@ -321,6 +327,9 @@ class Oeamdb:
         self.max_chembl_queries = max_chembl_queries
         self.max_docs_queries = max_docs_queries
         self.commit_batch = commit_batch
+        self.chembl_download = chembl_download
+        self.chembl_version = chembl_version
+        self.chembl_prefix = list(self.data_folder.absolute().parts)
         if workers is None:
             self.workers = max(1,mp.cpu_count()-1)
         else:
@@ -363,6 +372,9 @@ class Oeamdb:
 
     def drop_all(self) -> None:
         """Clean slate for the database."""
+        with self.engine.connect() as conn:
+            conn.execute(text("DROP VIEW IF EXISTS course_pivot;"))
+            conn.commit()
         self.sql_base.metadata.drop_all(self.engine)
 
     def import_all(self):
@@ -381,6 +393,15 @@ class Oeamdb:
             / "atc_corr.json")
         self.apply_atc_corrections()
         self.resolve_substance_atc()
+
+    def get_chembl_engine(self):
+        if not self.chembl_download:
+            raise ValueError("chembl_download is set to False.")
+        chembl_path = chembl_downloader.download_extract_sqlite(
+            version=self.chembl_version,
+            prefix=self.chembl_prefix,
+            )
+        self.chembl_engine = create_engine(f"sqlite:///{chembl_path}")
 
     def import_basg(self):
         self.import_basg_csv()
@@ -675,9 +696,12 @@ class Oeamdb:
 
     def get_chembl_mol_info(self):
         if self.chembl_engine is None:
-            raise NotImplementedError(
-                "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
-            )
+            if self.chemb_download:
+                self.get_chembl_engine()
+            else:
+                raise NotImplementedError(
+                    "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
+                )
         with self.chembl_engine.connect() as chembl_conn:
             molecules_query = chembl_conn.execute(
                 text(
@@ -762,9 +786,12 @@ class Oeamdb:
 
     def get_chembl_mol_atc(self):
         if self.chembl_engine is None:
-            raise NotImplementedError(
-                "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
-            )
+            if self.chemb_download:
+                self.get_chembl_engine()
+            else:
+                raise NotImplementedError(
+                    "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
+                )
         with self.chembl_engine.connect() as chembl_conn:
             molecules_query = chembl_conn.execute(
                 text(
@@ -803,9 +830,12 @@ class Oeamdb:
 
     def get_chembl_atc_info(self):
         if self.chembl_engine is None:
-            raise NotImplementedError(
-                "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
-            )
+            if self.chemb_download:
+                self.get_chembl_engine()
+            else:
+                raise NotImplementedError(
+                    "Chembl REST API queries not implemented yet. Please provide a Chembl DB engine."
+                )
         with self.chembl_engine.connect() as chembl_conn:
             atc_query = chembl_conn.execute(
                 text(
@@ -1153,6 +1183,28 @@ class Oeamdb:
                 """
                 ),
             )
+            conn.execute(text("""
+                UPDATE atc_code SET
+                    atc_code_short=coalesce(level3,
+                      CASE
+                      WHEN upper(substr(atc_code, 1, 1))
+                                <>
+                            lower(substr(atc_code, 1, 1))
+                       AND upper(substr(atc_code, 2, 1))
+                                <>
+                            lower(substr(atc_code, 2, 1))
+                      THEN substr(atc_code, 1, 4 + 1)
+                      ELSE substr(atc_code, 1, 4)
+                            end
+                        )
+                ;"""))
+            conn.execute(text("""
+                INSERT INTO atc_code(atc_code,atc_code_short)
+                    SELECT DISTINCT ac.atc_code_short,ac.atc_code_short
+                    FROM atc_code AS ac
+                    WHERE true
+                ON CONFLICT DO NOTHING
+                ;"""))
             conn.commit()
 
     def import_category_corrections(self,filepath):
@@ -1211,7 +1263,7 @@ class Oeamdb:
             global_ans = []
             for s in substances:
                 ans = {"link_type":"substance",
-                        "link_id":s,
+                        "link_id":s.upper(),
                         }
                 ans.update(course_data)
                 yield ans
@@ -1278,7 +1330,7 @@ class Oeamdb:
                     a.atc_code
                 FROM course c
                 LEFT OUTER JOIN substance s
-                ON :link_type='substance' AND s.name_en=:link_id
+                ON :link_type='substance' AND (s.name_en=:link_id OR s.name_de=:link_id) 
                 LEFT OUTER JOIN product p
                 ON :link_type='product' AND p.product_key=:link_id
                 LEFT OUTER JOIN atc_code a
@@ -1928,7 +1980,7 @@ class Oeamdb:
             return [
                 {
                     "product_key": data["Zulassungsnummer"],
-                    "atc_code": data["ATC Code"],
+                    "atc_code": data["ATC Code"] or data["ATC code short"],
                     "approval_date": approval_date,
                     "human_usage": data["Verwendung"] == "Human",
                     "vet_usage": data["Verwendung"] == "Veterin\u00e4r",
@@ -1960,21 +2012,49 @@ class Oeamdb:
                 }
             ]
 
+        def global_attr_processor(data):
+            # if not passes_vet(data):
+            #     return []
+            wirkstoff = data["Wirkstoff_SplitResultList"]
+            inn = data["INN"] if data["INN"] is not None else wirkstoff
+            if wirkstoff is None and inn is None:
+                return []
+            cid = data["PubChem CID"]
+            return  [{
+                                "not_in_m_reason": (data["Warum nicht in M"] or "").strip() or None,
+                                "product_key": data["Zulassungsnummer"],
+                                "atc_code": (data["ATC code short"] or "").strip() or None,
+                                "vo_unit": (data["VO-Einheit"] or "").strip() or None,
+                                "name_de": wirkstoff.upper() if wirkstoff else None,
+                                "name_en": inn.upper() if inn else None,
+                                "pubchem_cid": str(cid) if cid is not None else None,
+                                "canonical_smiles": data["SMILES (Pubchem)"],
+                            }]
+            # if code is None:
+            #     return [dict(atc_code=None,**body)]
+            # else:
+            #     return [
+            #         dict(atc_code=c,**body)
+            #         for c in code.replace(",",";").upper().split(";")
+            #     ]
+
+
         def atc_processor(data):
             # if not passes_vet(data):
             #     return []
             code = data["ATC Code"]
             wirkstoff = data["Wirkstoff_SplitResultList"]
             inn = data["INN"] if data["INN"] is not None else wirkstoff
-            if code is None:
-                return []
+            code_list = [data["ATC code short"]]
+            if code is not None:
+                code_list += code.replace(",",";").upper().split(";")
             return [
                 {
                     "product_key": data["Zulassungsnummer"],
                     "atc_code": c.strip(" "),
                     "name_en": inn.upper() if inn else None,
                     "name_de": wirkstoff.upper() if wirkstoff else None,
-                } for c in code.replace(",",";").upper().split(";")
+                } for c in code_list
             ]
 
         def course_processor(df):
@@ -2043,7 +2123,31 @@ class Oeamdb:
                         )
             return ans
 
-        importers = [
+        def full_course_mat_processor(data):
+            # if not passes_vet(data):
+            #     return []
+            wirkstoff = data["Wirkstoff_SplitResultList"]
+            inn = data["INN"] if data["INN"] is not None else wirkstoff
+            courses = []
+            for cr in all_courses.values():
+                if (data[cr["colname"]] is not None
+                    and
+                    data[cr["colname"]] not in (""," ","\xa0")):
+                    courses.append(cr)
+
+            ans = []
+            for c in courses:
+                ans.append({
+                "submitted_by":data[c["colname"]],
+                    "name_de": wirkstoff.upper() if wirkstoff else None,
+                    "name_en": inn.upper() if inn else None,
+                "product_key": data["Zulassungsnummer"],
+                "atc_code": data["ATC code short"],
+                **c
+                    })
+            return ans
+
+        importers1 = [
             # products
             Importer(
                 query="""
@@ -2126,6 +2230,8 @@ class Oeamdb:
                 param_processor=atc_processor,
                 param_split=True,
             ),
+        ]
+        importers2 = [
             # product <-> atc link
             Importer(
                 query="""
@@ -2166,7 +2272,7 @@ class Oeamdb:
                     c.id,
                     :submitted_by,
                     :link_type,
-                    :link_id,
+                    COALESCE(a.atc_code_short,:link_id),
                     s.id,
                     p.id,
                     a.atc_code
@@ -2190,6 +2296,81 @@ class Oeamdb:
                 param_processor=course_mat_processor,
                 param_split=True,
             ),
+            Importer(
+                query="""
+                INSERT INTO course_material_full_descr(
+                    course_id,
+                    submitted_by,
+                    substance_id,
+                    product_id,
+                    atc_code
+                    )
+                SELECT
+                    c.id,
+                    :submitted_by,
+                    s.id,
+                    p.id,
+                    a.atc_code_short
+                FROM course c
+                INNER JOIN substance s
+                ON s.name_en=COALESCE(:name_en,:name_de)
+                INNER JOIN product p
+                ON p.product_key=:product_key
+                INNER JOIN atc_code a
+                ON a.atc_code=:atc_code
+                WHERE c.semester=:semester
+                    AND c.level=:level
+                    AND c.title=:title
+                ON CONFLICT
+                DO NOTHING
+                        ;""",
+                param_processor=full_course_mat_processor,
+                param_split=True,
+            ),
+            # substance <-> atc link
+            Importer(
+                query="""
+                        INSERT INTO not_in_m_reason(
+                            substance_id,
+                            atc_code,
+                            product_id,
+                            reason)
+                        SELECT
+                            s.id,
+                            (SELECT atc_code_short FROM atc_code
+                                WHERE atc_code=:atc_code),
+                            (SELECT id FROM product p
+                                WHERE p.product_key=:product_key),
+                            CAST(:not_in_m_reason AS TEXT)
+                        FROM substance s
+                        WHERE s.name_en=:name_en
+                        AND CAST(:not_in_m_reason AS TEXT) IS NOT NULL
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=global_attr_processor,
+                param_split=True,
+            ),
+            Importer(
+                query="""
+                        INSERT INTO vo_unit(
+                            substance_id,
+                            atc_code,
+                            product_id,
+                            description)
+                        SELECT s.id,
+                        (SELECT atc_code_short FROM atc_code
+                            WHERE atc_code=:atc_code),
+                        (SELECT id FROM product p
+                            WHERE p.product_key=:product_key),
+                        CAST(:vo_unit AS TEXT)
+                        FROM substance s
+                        WHERE s.name_en=:name_en
+                        AND CAST(:vo_unit AS TEXT) IS NOT NULL
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=global_attr_processor,
+                param_split=True,
+            ),
         ]
 
         # course
@@ -2206,10 +2387,185 @@ class Oeamdb:
                 )
             conn.commit()
 
-        for importer in importers:
+        for importer in importers1:
+            importer.import_all(engine=self.engine, params=file_content)
+
+        self.apply_atc_corrections()
+
+        for importer in importers2:
             importer.import_all(engine=self.engine, params=file_content)
 
         if not skip:
             register_hash(
                 engine=self.engine, filehash=filehash, filepath=filepath
             )
+
+
+    def refresh_course_pivot(self, force=False):
+        """Rebuild course_pivot if the set of courses no longer matches it.
+
+        Returns True if the view was (re)created, False if it was already
+        up to date. Sets self.course_labels to {column_name: course_name}.
+        """
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT id, level || semester || ' ' || title AS name FROM course ORDER BY id")
+            ).all()
+
+        courses = [(int(r[0]), r[1]) for r in rows]
+
+        self.course_labels = {f"course_{cid}": name for cid, name in courses}
+        expected = ["element_id"] + list(self.course_labels)
+
+        insp = inspect(self.engine)
+        if not force and "course_pivot" in insp.get_view_names():
+            current = [c["name"] for c in insp.get_columns("course_pivot")]
+            if current == expected:
+                return False
+
+        base_cols = [
+            "atc_code",
+            "product_id",
+            "substance_id"
+        ]
+        course_cols = [
+                f"(CASE WHEN course_id = {cid} THEN submitted_by END) AS course_{cid}"
+                for cid, _ in courses
+            ]
+        joined_cols = ",\n".join(base_cols + course_cols)
+        ddl = (
+            "CREATE VIEW course_pivot AS\n"
+            "  SELECT "
+            f"{joined_cols}\n"
+            "  FROM course_material_full_descr\n"
+            #"  GROUP BY atc_code,product_id,"substance_id
+        )
+
+        with self.engine.begin() as conn:
+            conn.execute(text("DROP VIEW IF EXISTS course_pivot"))
+            conn.execute(text(ddl))
+            conn.commit()
+        return True
+
+
+    def migrate_info(self,source_engine):
+        queries = [
+            {
+                "source_query":"""
+                    SELECT level,semester,title,taught_by
+                    FROM course
+                    ;""",
+                "target_query":"""
+                    INSERT INTO course(
+                        level,
+                        semester,
+                        title,
+                        taught_by
+                        )
+                    SELECT
+                        :level,
+                        :semester,
+                        :title,
+                        :taught_by
+                    ON CONFLICT DO NOTHING
+                    ;""",
+            },
+            {
+                "source_query":"""
+                    SELECT p.product_key,
+                        s.name_en AS substance_name,
+                        cm.atc_code,
+                        cm.submitted_by,
+                        c.level AS course_level,
+                        c.semester AS course_semester,
+                        c.title AS course_title
+                    FROM course_material_full_descr cm
+                    INNER JOIN product p
+                    ON p.id=cm.product_id
+                    INNER JOIN substance s
+                    ON s.id=cm.substance_id
+                    INNER JOIN course c
+                    ON c.id=cm.course_id
+                    ;""",
+                "target_query":"""
+                    INSERT INTO course_material_full_descr (
+                        product_id,
+                        substance_id,
+                        atc_code,
+                        course_id,
+                        submitted_by
+                        )
+                    SELECT p.id,
+                        s.id,
+                        ac.atc_code_short,
+                        c.id,
+                        :submitted_by
+                    FROM product p
+                    INNER JOIN substance s
+                    ON p.product_key=:product_key
+                    AND s.name_en=:substance_name
+                    INNER JOIN course c
+                    ON c.title=:course_title
+                    AND c.semester=:course_semester
+                    AND c.level=:course_level
+                    INNER JOIN atc_code ac
+                    ON ac.atc_code=:atc_code
+                    ON CONFLICT DO NOTHING
+                    ;""",
+            },
+            {
+                "source_query":"""
+                    SELECT p.product_key,
+                        s.name_en AS substance_name,
+                        cm.atc_code,
+                        cm.submitted_by,
+                        c.level AS course_level,
+                        c.semester AS course_semester,
+                        c.title AS course_title
+                    FROM course_material_full_descr cm
+                    INNER JOIN product p
+                    ON p.id=cm.product_id
+                    INNER JOIN substance s
+                    ON s.id=cm.substance_id
+                    INNER JOIN course c
+                    ON c.id=cm.course_id
+                    ;""",
+                "target_query":"""
+                    INSERT INTO course_material (
+                        link_type,
+                        link_id,
+                        product_id,
+                        substance_id,
+                        atc_code,
+                        course_id,
+                        submitted_by
+                        )
+                    SELECT DISTINCT 'combined',
+                        :product_key || '__' || :substance_name || '__' || ac.atc_code_short,
+                        p.id,
+                        s.id,
+                        ac.atc_code_short,
+                        c.id,
+                        :submitted_by
+                    FROM course c
+                    INNER JOIN atc_code ac
+                    ON c.title=:course_title
+                    AND c.semester=:course_semester
+                    AND c.level=:course_level
+                    AND ac.atc_code=:atc_code
+                    LEFT OUTER JOIN product p
+                    ON p.product_key=:product_key
+                    LEFT OUTER JOIN substance s
+                    ON s.name_en=:substance_name
+                    ON CONFLICT DO NOTHING
+                    ;""",
+            },
+        ]
+        with (source_engine.connect() as s_conn,
+            self.engine.connect() as conn):
+            for query in queries:
+                data = s_conn.execute(
+                    text(query["source_query"])
+                    ).mappings().all()
+                conn.execute(text(query["target_query"]),data)
+            conn.commit()

@@ -1,0 +1,135 @@
+name: oeamdb_web
+
+services:
+  api:
+    image: oeamdb_api_${OEAMDB_WEB_IMAGE_TAG:-latest}:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        OEAMDB_WEB_VERSION: ${OEAMDB_WEB_VERSION:?set OEAMDB_WEB_VERSION}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OEAMDB_WEB_DATABASE_URL: postgresql+psycopg://${OEAMDB_WEB_POSTGRES_USER}:${OEAMDB_WEB_POSTGRES_PASSWORD}@db:5432/${OEAMDB_WEB_POSTGRES_DB}
+      OEAMDB_WEB_GIT_SHA: ${OEAMDB_WEB_GIT_SHA:-unknown}
+      WEB_CONCURRENCY: ${OEAMDB_WEB_CONCURRENCY:-4}
+      PYSTOW_HOME: /tmp/pystow
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  chembl_init:
+    image: oeamdb_create_${OEAMDB_WEB_IMAGE_TAG:-latest}:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.create_db
+      args:
+        OEAMDB_WEB_VERSION: ${OEAMDB_WEB_VERSION:?set OEAMDB_WEB_VERSION}
+    command: ["python3", "/app/oeamdb_script/chembl_script.py"]
+    env_file: .env
+    environment:
+      PGDATABASE: "chembl"
+      POSTGRES_HOST: db
+      POSTGRES_USER: ${OEAMDB_WEB_POSTGRES_ADMIN}
+      POSTGRES_FALLBACK: ${OEAMDB_WEB_POSTGRES_DB}
+      POSTGRES_PASSWORD: ${OEAMDB_WEB_POSTGRES_ADMIN_PASSWORD}
+      WORKDIR: /app/oeamdb_data/chembl
+      PYSTOW_HOME: /tmp/pystow
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ${OEAMDB_WEB_DATAFOLDER:-$HOME/.oeamdb_data}:/app/oeamdb_data
+      - ${OEAMDB_WEB_SCRIPTPATH:-./oeamdb_example_script}:/app/oeamdb_script:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+  
+  oeamdb_create:
+    image: oeamdb_create_${OEAMDB_WEB_IMAGE_TAG:-latest}:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.create_db
+      args:
+        OEAMDB_WEB_VERSION: ${OEAMDB_WEB_VERSION:?set OEAMDB_WEB_VERSION}
+    # restart: unless-stopped
+    env_file: .env
+    environment:
+      OEAMDB_WEB_DATABASE_URL: postgresql+psycopg://${OEAMDB_WEB_POSTGRES_USER}:${OEAMDB_WEB_POSTGRES_PASSWORD}@db:5432/${OEAMDB_WEB_POSTGRES_DB}
+      OEAMDB_WEB_CHEMBL_DATABASE_URL: postgresql+psycopg://${OEAMDB_WEB_POSTGRES_ADMIN}:${OEAMDB_WEB_POSTGRES_ADMIN_PASSWORD}@db:5432/chembl
+      OEAMDB_WEB_DATABASE_ADMIN_URL: postgresql+psycopg://${OEAMDB_WEB_POSTGRES_ADMIN}:${OEAMDB_WEB_POSTGRES_ADMIN_PASSWORD}@db:5432/${OEAMDB_WEB_POSTGRES_DB}
+      OEAMDB_WEB_GIT_SHA: ${OEAMDB_WEB_GIT_SHA:-unknown}
+      OEAMDB_WEB_DATAFOLDER: /app/oeamdb_data
+      PYSTOW_HOME: /tmp/pystow
+    depends_on:
+      db:
+        condition: service_healthy
+      chembl_init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ${OEAMDB_WEB_DATAFOLDER:-$HOME/.oeamdb_data}:/app/oeamdb_data
+      - ${OEAMDB_WEB_SCRIPTPATH:-./oeamdb_example_script}:/app/oeamdb_script:ro
+    command: ["python3", "/app/oeamdb_script/oeamdb_script.py"]
+
+  db:
+    image: postgis/postgis:18-3.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${OEAMDB_WEB_POSTGRES_ADMIN:?set OEAMDB_WEB_POSTGRES_ADMIN}
+      POSTGRES_PASSWORD: ${OEAMDB_WEB_POSTGRES_ADMIN_PASSWORD:?set OEAMDB_WEB_POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: ${OEAMDB_WEB_POSTGRES_DB:?set OEAMDB_WEB_POSTGRES_DB}
+      API_DB_USER: ${OEAMDB_WEB_POSTGRES_USER:?set OEAMDB_WEB_POSTGRES_USER}
+      API_DB_PASSWORD: ${OEAMDB_WEB_POSTGRES_PASSWORD:?set OEAMDB_WEB_POSTGRES_PASSWORD}
+    volumes:
+      -  ${OEAMDB_WEB_DATAFOLDER:-$HOME/.oeamdb_data}/pgdata:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+    ports:
+      - "${OEAMDB_WEB_DB_BIND:-127.0.0.1:5432}:5432"
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "${OEAMDB_WEB_API_BIND}:443"
+      - "${OEAMDB_WEB_API_BIND}:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${OEAMDB_TLS_KEY}:/certs/privkey.pem:ro
+      - ${OEAMDB_TLS_CERT}:/certs/fullchain.pem:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      API: "api:8000"
+      DOMAIN: "${OEAMDB_DOMAIN}"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+
+volumes:
+  caddy_data:
+  caddy_config:
