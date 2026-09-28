@@ -37,6 +37,7 @@ dependencies = [
     "pymupdf4llm",
     "fastexcel",
     "chembl-downloader",
+    "jinja2",
 ]
 description = "Gathering official pharmaceutical products list for Austria, enriched with relevant data."
 keywords = ["arzneimittel","austria","pharmacy","medical"]

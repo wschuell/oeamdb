@@ -88,7 +88,7 @@ services:
     volumes:
       - ${OEAMDB_WEB_DATAFOLDER:-$HOME/.oeamdb_data}:/app/oeamdb_data
       - ${OEAMDB_WEB_SCRIPTPATH:-./oeamdb_example_script}:/app/oeamdb_script:ro
-    command: ["python3", "/app/oeamdb_script/oeamdb_script.py"]
+    command: ["python3", "/app/oeamdb_script/${OEAMDB_WEB_SCRIPTNAME:-oeamdb_script.py}"]
 
   db:
     image: postgis/postgis:18-3.6-alpine

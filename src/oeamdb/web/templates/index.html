@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+  :root {
+    --get: #61affe;   --get-bg: rgba(97,175,254,.1);
+    --post: #49cc90;  --post-bg: rgba(73,204,144,.1);
+    --text: #3b4151;  --muted: #6b7280;
+    --border: #d9d9d9; --bg: #fafafa; --header: #1b1b1b;
+    --hl: #fca130;    /* highlight color */
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Open Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header { background: var(--header); padding: 12px 0; }
+  header .bar { max-width: 1100px; margin: 0 auto; padding: 0 20px;
+    color: #fff; font-weight: 700; font-size: 1.1rem; letter-spacing: .3px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 30px 20px 60px; }
+
+  .info h1 { font-size: 36px; margin: 0 0 6px; font-family: sans-serif; }
+  .info h1 small {
+    font-size: 11px; vertical-align: super; padding: 2px 6px; margin-left: 6px;
+    border-radius: 57px; background: #7d8492; color: #fff; font-weight: 600;
+  }
+  .info .base { font-family: monospace; color: var(--muted); font-size: 14px; }
+  .info p { margin: 14px 0 30px; font-size: 14px; }
+
+  .tag { font-size: 24px; font-weight: 700; padding: 10px 0;
+    border-bottom: 1px solid rgba(59,65,81,.3); margin: 0 0 14px; }
+
+  .op {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px solid; border-radius: 4px; padding: 6px 8px; margin-bottom: 12px;
+    box-shadow: 0 0 3px rgba(0,0,0,.19);
+  }
+  .op.get  { border-color: var(--get);  background: var(--get-bg); }
+  .op.post { border-color: var(--post); background: var(--post-bg); }
+  .path { padding-left: 4px; font-family: monospace; font-weight: 600; font-size: 16px;
+    color: var(--text); text-decoration: none; word-break: break-all; }
+  .path:hover { text-decoration: underline; }
+  .desc { flex: 1; font-size: 13px; color: var(--muted); min-width: 160px; }
+  .btn {
+    margin-left: auto; padding: 5px 20px; font-size: 14px; font-weight: 700;
+    border: 2px solid; border-radius: 4px; background: transparent;
+    text-decoration: none; cursor: pointer; white-space: nowrap;
+  }
+  .get .btn  { border-color: var(--get);  color: var(--get); }
+  .post .btn { border-color: var(--post); color: var(--post); }
+  .btn:hover { color: #fff; }
+  .get .btn:hover  { background: var(--get); }
+  .post .btn:hover { background: var(--post); }
+
+  .op.highlight {
+    border-color: var(--hl);
+    border-left-width: 6px; padding-left: 6px;
+    background: color-mix(in srgb, var(--hl) 22%, transparent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--hl) 45%, transparent);
+  }
+  .op.highlight .desc { color: var(--text); font-weight: 600; }
+  .op.highlight .btn { color: #fff; background: var(--hl); border-color: var(--hl); }
+  .op.highlight .btn:hover { filter: brightness(.92); }
+
+  footer { margin-top: 40px; font-size: 12px; color: var(--muted); text-align: center; }
+
+  @media (max-width: 600px) {
+    .info h1 { font-size: 26px; }
+    .btn { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<header><div class="bar">ÖAMDB</div></header>
+
+<main>
+  <section class="info">
+    <h1>{{ title }} <small>v{{ version }}</small></h1>
+    <div class="base">Base URL: {{ base_url }}</div>
+    {% if description %}<p>{{ description }}</p>{% endif %}
+  </section>
+
+  {% for section in sections %}
+  <h2 class="tag">{{ section.name }}</h2>
+  {% for ep in section.endpoints %}
+  <div class="op get{% if ep.highlight %} highlight{% endif %}"
+       {% if ep.color %}style="--hl: {{ ep.color }}"{% endif %}>
+    <a class="path" href="{{ ep.path }}">{{ ep.path }}</a>
+    <span class="desc">{{ ep.description }}</span>
+    <a class="btn" href="{{ ep.path }}">Open</a>
+  </div>
+  {% endfor %}
+  {% endfor %}
+
+  <footer>Served at /</footer>
+</main>
+</body>
+</html>

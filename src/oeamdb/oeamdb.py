@@ -47,6 +47,7 @@ from .stats import collect_stats
 
 logger = logging.getLogger(__name__)
 
+
 def _fetch_worker(args):
     i, meta = args
     try:
@@ -55,6 +56,7 @@ def _fetch_worker(args):
     except Exception as e:
         # return a plain string, never the live exception/traceback
         return i, meta, None, f"{type(e).__name__}: {e}"
+
 
 def compute_hash(text_data: str | bytes) -> str:
     return xxhash.xxh3_64(text_data).hexdigest()
@@ -101,6 +103,7 @@ def register_hash(engine, filehash, filepath):
         )
         conn.commit()
 
+
 PATTERN = r"^(?P<level>[A-Za-z])(?P<semester>\d{1,2}) (?P<title>[\w ]+)$"
 
 
@@ -118,6 +121,7 @@ def consecutive_pattern_columns(
         elif run:
             break
     return run
+
 
 def match_lists(en, de, product_key):
     """
@@ -146,12 +150,12 @@ def match_lists(en, de, product_key):
     same = set(en) & set(dec)
     for e in same:
         pairs.append(
-                {
-                    "name_en": e,
-                    "name_de": e,
-                    "product_key": product_key,
-                }
-            )
+            {
+                "name_en": e,
+                "name_de": e,
+                "product_key": product_key,
+            }
+        )
         enc.remove(e)
         dec.remove(e)
         n -= 1
@@ -178,10 +182,12 @@ def match_lists(en, de, product_key):
         enc.remove(e)
     return pairs
 
+
 def parse_pdf(content: bytes, embed_images: bool = True):
     doc = pymupdf.open(stream=content, filetype="pdf")
     md = pymupdf4llm.to_markdown(doc, embed_images=embed_images)
     return md
+
 
 def fetch_and_parse(url, max_attempts=5):
     delay = 1
@@ -201,13 +207,19 @@ def fetch_and_parse(url, max_attempts=5):
             except Exception:
                 corrupted_pdf = True
                 text_content = None
-            return {"content": r.content,
-                    "text_content": text_content,
-                    "download_success": True,
-                    "corrupted_pdf":corrupted_pdf}
+            return {
+                "content": r.content,
+                "text_content": text_content,
+                "download_success": True,
+                "corrupted_pdf": corrupted_pdf,
+            }
         if r.status_code == 404:
-            return {"content": None,
-                    "text_content": None, "download_success": False, "corrupted_pdf":None}
+            return {
+                "content": None,
+                "text_content": None,
+                "download_success": False,
+                "corrupted_pdf": None,
+            }
         raise IOError(f"Failed download status {r.status_code}: {url}")
     return None
 
@@ -294,11 +306,13 @@ class Oeamdb:
         max_docs_queries=None,
         workers=None,
         commit_batch=100,
-        create_metadata: bool=True,
-        chembl_download: bool=False,
-        chembl_version: int|None = None,
+        create_metadata: bool = True,
+        chembl_download: bool = False,
+        chembl_version: int | None = None,
+        connect_args: dict | None = None,
     ):
         self.engine_url = engine_url
+        self.connect_args = connect_args or {}
         if engine is not None:
             self.engine = engine
         else:
@@ -331,23 +345,28 @@ class Oeamdb:
         self.chembl_version = chembl_version
         self.chembl_prefix = list(self.data_folder.absolute().parts)
         if workers is None:
-            self.workers = max(1,mp.cpu_count()-1)
+            self.workers = max(1, mp.cpu_count() - 1)
         else:
             self.workers = workers
 
-    def get_stats(self,commit=True):
+    def get_stats(self, commit=True):
         ans = collect_stats(engine=self.engine)
         if commit:
             with self.engine.connect() as conn:
-                conn.execute(text("""
+                conn.execute(
+                    text(
+                        """
                     INSERT INTO _stats(stats_info, stats_info_text)
                     SELECT :stats_info,:stats_info_text
-                    """).bindparams(bindparam(
-                                "stats_info",
-                                type_=JSON(
-                                    none_as_null=True
-                                ),)),{"stats_info":ans,
-                                    "stats_info_text":json.dumps(ans,indent=4)})
+                    """
+                    ).bindparams(
+                        bindparam(
+                            "stats_info",
+                            type_=JSON(none_as_null=True),
+                        )
+                    ),
+                    {"stats_info": ans, "stats_info_text": json.dumps(ans, indent=4)},
+                )
                 conn.commit()
         return ans
 
@@ -364,6 +383,7 @@ class Oeamdb:
                 }
             else:
                 connect_args = {}
+            connect_args.update(self.connect_args)
             self.engine_cfg = {
                 "url": self.engine_url,
                 "connect_args": connect_args,
@@ -377,9 +397,16 @@ class Oeamdb:
             conn.commit()
         self.sql_base.metadata.drop_all(self.engine)
 
-    def import_all(self):
+    def import_all(
+        self,
+        before_boundary: datetime.datetime | None = None,
+        after_boundary: datetime.datetime | None = None,
+    ):
         self.download_basg()
-        self.import_basg()
+        self.import_basg(
+            before_boundary=before_boundary,
+            after_boundary=after_boundary,
+        )
         self.geolocate()
         self.resolve_docs()
         self.get_chembl_atc_info()
@@ -388,9 +415,9 @@ class Oeamdb:
         self.get_chembl_mol_atc()
         self.resolve_pubchem()
         self.get_atc_corrections()
-        self.get_atc_corrections(filepath=Path(__file__).parent
-            / "data"
-            / "atc_corr.json")
+        self.get_atc_corrections(
+            filepath=Path(__file__).parent / "data" / "atc_corr.json"
+        )
         self.apply_atc_corrections()
         self.resolve_substance_atc()
 
@@ -400,14 +427,30 @@ class Oeamdb:
         chembl_path = chembl_downloader.download_extract_sqlite(
             version=self.chembl_version,
             prefix=self.chembl_prefix,
-            )
+        )
         self.chembl_engine = create_engine(f"sqlite:///{chembl_path}")
 
-    def import_basg(self):
-        self.import_basg_csv()
-        self.import_basg_json()
+    def import_basg(
+        self,
+        before_boundary: datetime.datetime | None = None,
+        after_boundary: datetime.datetime | None = None,
+    ):
+        self.import_basg_csv(
+            before_boundary=before_boundary,
+            after_boundary=after_boundary,
+        )
+        self.import_basg_json(
+            before_boundary=before_boundary,
+            after_boundary=after_boundary,
+        )
 
-    def import_basg_json(self, force=False, update_mode=True):
+    def import_basg_json(
+        self,
+        force=False,
+        update_mode=True,
+        before_boundary: datetime.datetime | None = None,
+        after_boundary: datetime.datetime | None = None,
+    ):
         filepath = self.data_folder / "basg.json"
         filehash = compute_filehash(filepath)
 
@@ -416,8 +459,32 @@ class Oeamdb:
         if skip and not force:
             return
 
+        def extract_date(c):
+            for key in [
+                "packageLeaflet",
+                "fachInformation",
+            ]:
+                value = c.get(key)
+                if value and value.get("validityDate"):
+                    return datetime.datetime.strptime(
+                        value.get("validityDate"), "%Y-%m-%d"
+                    )
+            return None
+
         with filepath.open(mode="r") as f:
             json_content = json.loads(f.read())
+        if before_boundary:
+            json_content = [
+                c
+                for c in json_content
+                if ((not extract_date(c)) or (extract_date(c) <= before_boundary))
+            ]
+        if after_boundary:
+            json_content = [
+                c
+                for c in json_content
+                if ((not extract_date(c)) or (extract_date(c) >= after_boundary))
+            ]
 
         def param_processor(data):
             shortage = data.get("drugShortage", None)
@@ -557,7 +624,12 @@ class Oeamdb:
                         f"After JSON update, {cnt} rows are still incomplete. JSON and CSV data might be from different timestamps."
                     )
 
-    def import_basg_csv(self, force=False):
+    def import_basg_csv(
+        self,
+        force=False,
+        before_boundary: datetime.datetime | None = None,
+        after_boundary: datetime.datetime | None = None,
+    ):
         filepath = self.data_folder / "basg.csv"
         filehash = compute_filehash(filepath)
         skip = check_hash(engine=self.engine, filehash=filehash, filepath=filepath)
@@ -566,6 +638,20 @@ class Oeamdb:
 
         with filepath.open(mode="r") as f:
             csv_content = list(pl.read_csv(f).iter_rows(named=True))
+        if before_boundary:
+            csv_content = [
+                c
+                for c in csv_content
+                if datetime.datetime.strptime(c["Zulassungsdatum"], "%Y-%m-%d")
+                <= before_boundary
+            ]
+        if after_boundary:
+            csv_content = [
+                c
+                for c in csv_content
+                if datetime.datetime.strptime(c["Zulassungsdatum"], "%Y-%m-%d")
+                >= after_boundary
+            ]
 
         def param_processor(data):
             processed_data = {
@@ -644,12 +730,12 @@ class Oeamdb:
                     ;""",
                 param_processor=param_processor,
                 param_split=True,
-                bindparams=[bindparam(
-                                "raw_info",
-                                type_=JSON(
-                                    none_as_null=True
-                                ),
-                            )]
+                bindparams=[
+                    bindparam(
+                        "raw_info",
+                        type_=JSON(none_as_null=True),
+                    )
+                ],
             ),
             Importer(
                 query="""
@@ -744,6 +830,7 @@ class Oeamdb:
                             """
                 )
             )
+
             def split_synonyms(mol_dict_list):
                 previous_molreg = None
                 for m in mol_dict_list:
@@ -1060,41 +1147,49 @@ class Oeamdb:
             )
             conn.commit()
 
-    def get_atc_corrections(self,filepath=None, official=True, force=False):
+    def get_atc_corrections(self, filepath=None, official=True, force=False):
         if filepath is None:
             if official:
                 filepath = self.data_folder / "atc_corrections_fhi.no.json"
             else:
-                raise ValueError("Value expected for arg filepath for method get_atc_corrections")
+                raise ValueError(
+                    "Value expected for arg filepath for method get_atc_corrections"
+                )
         if official and (not filepath.exists() or force):
-            r = requests.get("https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",timeout=5)
+            r = requests.get(
+                "https://atcddd.fhi.no/atc_ddd_alterations__cumulative/atc_alterations/",
+                timeout=5,
+            )
 
-            soup = BeautifulSoup(r.content,"html.parser")
-            div_table = soup.find_all("div",attrs={"class":"listtable"})[0]
+            soup = BeautifulSoup(r.content, "html.parser")
+            div_table = soup.find_all("div", attrs={"class": "listtable"})[0]
             rows = [
-                        [(
-                            rr.text.split("\xa0")[0].strip("\n"),
-                            (rr.a["title"].strip("\n") if rr.find("a") else None),
-                            ) for rr in
-                        r.find_all("td")
-                        ]
-                    for r in div_table.find_all("tr")
-                    if len(r.find_all("td"))>1
-                    ]
-            atc_corrections = [{    "submitted_by":None,
-                                    "atc_from":r[0][0],
-                                    "name":r[1][0],
-                                    "atc_to":r[2][0],
-                                    "year":r[3][0],
-                                    "footnotes":
-                                            {
-                                            "footnote_from":r[0][1],
-                                            "footnote_name":r[1][1],
-                                            "footnote_to":r[2][1],
-                                            "footnote_year":r[3][1],
-                                             },
-                                } for r in rows
-                                ]
+                [
+                    (
+                        rr.text.split("\xa0")[0].strip("\n"),
+                        (rr.a["title"].strip("\n") if rr.find("a") else None),
+                    )
+                    for rr in r.find_all("td")
+                ]
+                for r in div_table.find_all("tr")
+                if len(r.find_all("td")) > 1
+            ]
+            atc_corrections = [
+                {
+                    "submitted_by": None,
+                    "atc_from": r[0][0],
+                    "name": r[1][0],
+                    "atc_to": r[2][0],
+                    "year": r[3][0],
+                    "footnotes": {
+                        "footnote_from": r[0][1],
+                        "footnote_name": r[1][1],
+                        "footnote_to": r[2][1],
+                        "footnote_year": r[3][1],
+                    },
+                }
+                for r in rows
+            ]
             with filepath.open(mode="w") as f:
                 f.write(json.dumps(atc_corrections))
         else:
@@ -1124,13 +1219,13 @@ class Oeamdb:
                             ;
                             """
                 ).bindparams(
-                            bindparam(
-                                "footnotes",
-                                type_=JSON(
-                                    none_as_null=True
-                                ),  # ().with_variant(JSONB, "postgresql"),
-                            )
-                        ),
+                    bindparam(
+                        "footnotes",
+                        type_=JSON(
+                            none_as_null=True
+                        ),  # ().with_variant(JSONB, "postgresql"),
+                    )
+                ),
                 atc_corrections,
             )
             conn.commit()
@@ -1183,7 +1278,9 @@ class Oeamdb:
                 """
                 ),
             )
-            conn.execute(text("""
+            conn.execute(
+                text(
+                    """
                 UPDATE atc_code SET
                     atc_code_short=coalesce(level3,
                       CASE
@@ -1197,17 +1294,23 @@ class Oeamdb:
                       ELSE substr(atc_code, 1, 4)
                             end
                         )
-                ;"""))
-            conn.execute(text("""
+                ;"""
+                )
+            )
+            conn.execute(
+                text(
+                    """
                 INSERT INTO atc_code(atc_code,atc_code_short)
                     SELECT DISTINCT ac.atc_code_short,ac.atc_code_short
                     FROM atc_code AS ac
                     WHERE true
                 ON CONFLICT DO NOTHING
-                ;"""))
+                ;"""
+                )
+            )
             conn.commit()
 
-    def import_category_corrections(self,filepath):
+    def import_category_corrections(self, filepath):
         with filepath.open(mode="r") as f:
             category_corrections = json.load(f)
         with self.engine.connect() as conn:
@@ -1224,12 +1327,13 @@ class Oeamdb:
             )
             conn.commit()
 
-    def import_course_material(self,
-            filepath: "Path|list[Path]",
-            replace=False,
-            ref_time=None,
-        ):
-        if not isinstance(filepath,list):
+    def import_course_material(
+        self,
+        filepath: "Path|list[Path]",
+        replace=False,
+        ref_time=None,
+    ):
+        if not isinstance(filepath, list):
             filepath = [filepath]
         course_material = []
         for fp in filepath:
@@ -1240,49 +1344,51 @@ class Oeamdb:
 
         def course_processor(data):
             ans = {
-                "taught_by":data["taught_by"],
-                "semester":data["semester"],
-                "level":data["level"],
-                "title":data["title"],
-                "ref_time":ref_time,
-                "submitted_by":data.get("submitted_by",None),
+                "taught_by": data["taught_by"],
+                "semester": data["semester"],
+                "level": data["level"],
+                "title": data["title"],
+                "ref_time": ref_time,
+                "submitted_by": data.get("submitted_by", None),
             }
             return ans
 
         def cm_processor(data):
             course_data = course_processor(data)
-            substances = data.get("substances",[])
-            if not isinstance(substances,list):
+            substances = data.get("substances", [])
+            if not isinstance(substances, list):
                 substances = [substances]
-            atc_codes = data.get("atc_codes",[])
-            if not isinstance(atc_codes,list):
+            atc_codes = data.get("atc_codes", [])
+            if not isinstance(atc_codes, list):
                 atc_codes = [atc_codes]
-            products = data.get("products",[])
-            if not isinstance(products,list):
+            products = data.get("products", [])
+            if not isinstance(products, list):
                 products = [products]
             global_ans = []
             for s in substances:
-                ans = {"link_type":"substance",
-                        "link_id":s.upper(),
-                        }
+                ans = {
+                    "link_type": "substance",
+                    "link_id": s.upper(),
+                }
                 ans.update(course_data)
                 yield ans
                 # global_ans.append(ans)
             for p in products:
-                ans = {"link_type":"product",
-                        "link_id":p,
-                        }
+                ans = {
+                    "link_type": "product",
+                    "link_id": p,
+                }
                 ans.update(course_data)
                 # global_ans.append(ans)
                 yield ans
             for a in atc_codes:
-                ans = {"link_type":"atc_code",
-                        "link_id":a,
-                        }
+                ans = {
+                    "link_type": "atc_code",
+                    "link_id": a,
+                }
                 ans.update(course_data)
                 # global_ans.append(ans)
                 yield ans
-
 
         importers = [
             Importer(
@@ -1349,30 +1455,31 @@ class Oeamdb:
                 param_processor=cm_processor,
                 param_split=True,
             ),
-            ]
+        ]
         for importer in importers:
             importer.import_all(engine=self.engine, params=course_material)
 
         if replace:
             with self.engine.connect() as conn:
-                conn.execute(text(
-                    """
+                conn.execute(
+                    text(
+                        """
                     DELETE FROM course_material
                         WHERE updated_at<:ref_time
                     ;"""
                     ),
-                {"ref_time":ref_time}
-                    )
-                conn.execute(text(
-                    """
+                    {"ref_time": ref_time},
+                )
+                conn.execute(
+                    text(
+                        """
                     DELETE FROM course
                         WHERE updated_at<:ref_time
                     ;"""
                     ),
-                {"ref_time":ref_time}
-                    )
+                    {"ref_time": ref_time},
+                )
                 conn.commit()
-
 
     def resolve_chembl(self):
         with self.engine.connect() as conn:
@@ -1389,9 +1496,10 @@ class Oeamdb:
                     struct_type=cm.structure_type
                     FROM chembl_mols AS cm
                     WHERE s.name_en=cm.name
-                    ;"""))
+                    ;"""
+                )
+            )
             conn.commit()
-
 
     def geolocate(self, max_queries=None):
         if max_queries is None:
@@ -1525,7 +1633,7 @@ class Oeamdb:
                     )
                     conn.commit()
 
-    def resolve_pubchem(self,max_queries=None):
+    def resolve_pubchem(self, max_queries=None):
         if max_queries is None:
             max_queries = self.max_pubchem_queries
         query_count = 0
@@ -1565,7 +1673,9 @@ class Oeamdb:
             )
             for i, s_info in enumerate(missing_smiles):
                 sid, s, s_cnt = s_info
-                logger.info(f"Querying Pubchem element {i+1} (over {s_cnt} total missing SMILES)")
+                logger.info(
+                    f"Querying Pubchem element {i+1} (over {s_cnt} total missing SMILES)"
+                )
                 sq = pubchem_cache_conn.execute(
                     """SELECT   canonical_smiles,
                                 standard_inchi,
@@ -1589,25 +1699,25 @@ class Oeamdb:
                         delay = time.time() - last_query
                         if delay < 1:
                             time.sleep(1 + random.random())
-                        comp = pcp.get_compounds(s,"name")
+                        comp = pcp.get_compounds(s, "name")
                         query_count += 1
                         last_query = time.time()
                         if comp:
                             lengths = {
                                 len({cp.canonical_smiles for cp in comp}),
                                 len({cp.inchikey for cp in comp}),
-                                }
+                            }
                             if lengths != {1}:
                                 msg = f"{len(comp)} non-matching elements found for {s}: {comp}"
                                 logger.info(msg)
 
                                 s_data = {
-                                    "search_text":s,
-                                    "pubchem_cid":None,
-                                    "pubchem_sid":None,
-                                    "canonical_smiles":None,
-                                    "standard_inchi":None,
-                                    "standard_inchi_key":None,
+                                    "search_text": s,
+                                    "pubchem_cid": None,
+                                    "pubchem_sid": None,
+                                    "canonical_smiles": None,
+                                    "standard_inchi": None,
+                                    "standard_inchi_key": None,
                                     "raw_data": [cp.record for cp in comp],
                                     "success": False,
                                     "sid": sid,
@@ -1615,24 +1725,24 @@ class Oeamdb:
                             else:
                                 c = comp[0]
                                 s_data = {
-                                    "search_text":s,
-                                    "pubchem_cid":c.cid,
-                                    "pubchem_sid":None,
-                                    "canonical_smiles":c.canonical_smiles,
-                                    "standard_inchi":c.inchi,
-                                    "standard_inchi_key":c.inchikey,
+                                    "search_text": s,
+                                    "pubchem_cid": c.cid,
+                                    "pubchem_sid": None,
+                                    "canonical_smiles": c.canonical_smiles,
+                                    "standard_inchi": c.inchi,
+                                    "standard_inchi_key": c.inchikey,
                                     "raw_data": c.record,
                                     "success": True,
                                     "sid": sid,
                                 }
                         else:
                             s_data = {
-                                "search_text":s,
-                                "pubchem_cid":None,
-                                "pubchem_sid":None,
-                                "canonical_smiles":None,
-                                "standard_inchi":None,
-                                "standard_inchi_key":None,
+                                "search_text": s,
+                                "pubchem_cid": None,
+                                "pubchem_sid": None,
+                                "canonical_smiles": None,
+                                "standard_inchi": None,
+                                "standard_inchi_key": None,
                                 "raw_data": None,
                                 "success": False,
                                 "sid": sid,
@@ -1672,14 +1782,14 @@ class Oeamdb:
                         case _:
                             raw_data = sq[6]
                     s_data = {
-                                "canonical_smiles": sq[0],
-                                "standard_inchi": sq[1],
-                                "standard_inchi_key": sq[2],
-                                "pubchem_cid": sq[3],
-                                "pubchem_sid": sq[4],
-                                "success": sq[5],
-                                "raw_data": raw_data,
-                                "sid": sid,
+                        "canonical_smiles": sq[0],
+                        "standard_inchi": sq[1],
+                        "standard_inchi_key": sq[2],
+                        "pubchem_cid": sq[3],
+                        "pubchem_sid": sq[4],
+                        "success": sq[5],
+                        "raw_data": raw_data,
+                        "sid": sid,
                     }
                     logger.info(f"Retrieved element {i+1} from local cache")
                 if s_data:
@@ -1694,14 +1804,12 @@ class Oeamdb:
                                 pubchem_sid=:pubchem_sid
                         WHERE id=:sid
                                 ;"""
-                        )
-                        ,
+                        ),
                         s_data,
                     )
                     conn.commit()
 
-
-    def resolve_docs(self,max_queries=None):
+    def resolve_docs(self, max_queries=None):
         separator = "._."
 
         if max_queries is None:
@@ -1749,16 +1857,19 @@ class Oeamdb:
                             corrupted_pdf
                         FROM document
                             ;""",
-                    )
-                while (chunk:=[{
-                                        "url":r[0],
-                                        "text_content":r[1],
-                                        "success":bool(r[2]),
-                                        "corrupted_pdf":bool(r[3]),
-                                        } for r in dq.fetchmany(10**2)]
-                    ):
+                )
+                while chunk := [
+                    {
+                        "url": r[0],
+                        "text_content": r[1],
+                        "success": bool(r[2]),
+                        "corrupted_pdf": bool(r[3]),
+                    }
+                    for r in dq.fetchmany(10**2)
+                ]:
                     conn.execute(
-                        text("""
+                        text(
+                            """
                             UPDATE document
                                 SET text_content=:text_content,
                                 download_success=:success,
@@ -1766,14 +1877,14 @@ class Oeamdb:
                             WHERE download_success IS NULL
                             AND url=:url
                             ;"""
-                            ),
-                        chunk
-                        )
+                        ),
+                        chunk,
+                    )
                     conn.commit()
 
                 missing_docs_query = conn.execute(
-                                    text(
-                                        """SELECT
+                    text(
+                        """SELECT
                                             d.url,
                                             d.valid_since,
                                             p.product_key,
@@ -1784,25 +1895,30 @@ class Oeamdb:
                                             ON p.id=d.product_id
                                          WHERE download_success IS NULL
                                                 """
-                                    )
-                                )
+                    )
+                )
                 missing_docs = [
-                    (i,dict(d._mapping))
-                    for (i,d) in enumerate(missing_docs_query.fetchall())
-                    ]
-
+                    (i, dict(d._mapping))
+                    for (i, d) in enumerate(missing_docs_query.fetchall())
+                ]
 
                 if max_queries is not None and len(missing_docs) > max_queries:
                     fetch_tasks = missing_docs[:max_queries]
-                    logger.info(f"Skipping {len(missing_docs)} documents (to stay below max downloads)")
+                    logger.info(
+                        f"Skipping {len(missing_docs)} documents (to stay below max downloads)"
+                    )
                 else:
                     fetch_tasks = missing_docs
 
                 with mp.Pool(self.workers) as pool:
                     n = 0
-                    for i, meta, dl_info,err in pool.imap_unordered(_fetch_worker, fetch_tasks):
+                    for i, meta, dl_info, err in pool.imap_unordered(
+                        _fetch_worker, fetch_tasks
+                    ):
                         if err is not None:
-                            logger.warning(f"Document {i+1} failed: {err} (url: {meta.get('url',None)})")
+                            logger.warning(
+                                f"Document {i+1} failed: {err} (url: {meta.get('url',None)})"
+                            )
                             continue
                         if dl_info is None:
                             logger.info(f"Failed/skipped document {i+1}")
@@ -1811,7 +1927,7 @@ class Oeamdb:
 
                         # SQLite cache write (parent owns the connection)
                         docs_cache_conn.execute(
-                                """INSERT INTO document(
+                            """INSERT INTO document(
                                     url,
                                     text_content,
                                     valid_since,
@@ -1828,8 +1944,8 @@ class Oeamdb:
                                     :download_success,
                                     :corrupted_pdf
                                         ;""",
-                                doc_data,
-                                )
+                            doc_data,
+                        )
 
                         # main DB update
                         conn.execute(
@@ -1845,10 +1961,9 @@ class Oeamdb:
                                 AND valid_since=:valid_since
                                 AND doc_type=:doc_type
                                     ;"""
-                            )
-                            ,
+                            ),
                             doc_data,
-                            )
+                        )
                         n += 1
                         if n % self.commit_batch == 0:
                             docs_cache_conn.commit()
@@ -1856,11 +1971,11 @@ class Oeamdb:
                 docs_cache_conn.commit()
                 conn.commit()
 
-
     def resolve_substance_atc(self):
         with self.engine.connect() as conn:
             for query in [
-                ("""
+                (
+                    """
                     WITH single_subst AS (
                         SELECT
                             ps.product_id,
@@ -1890,9 +2005,10 @@ class Oeamdb:
                     INNER JOIN single_subst ss ON ss.product_id = p.id
                     INNER JOIN prod_atc   pa ON pa.product_id = p.id
                     ON CONFLICT DO NOTHING
-                    ;"""),
-
-                ("""
+                    ;"""
+                ),
+                (
+                    """
                     INSERT INTO substance_atc
                         (substance_id,
                         atc_code,
@@ -1905,30 +2021,28 @@ class Oeamdb:
                     INNER JOIN substance s
                         ON UPPER(a.who_name) = s.name_en
                     ON CONFLICT DO NOTHING
-                    ;"""),
-
+                    ;"""
+                ),
                 # ("""
                 #     ;"""),
-
-                ]:
+            ]:
                 conn.execute(text(query))
                 conn.commit()
 
-    def from_file(self,
+    def from_file(
+        self,
         filepath: Path,
         force: bool = False,
         file_type: "str|None" = None,
-        header_row: int=2,
-        skip_rows: int=0,
-        ) -> None:
+        header_row: int = 2,
+        skip_rows: int = 0,
+    ) -> None:
         """
         Full DB reconstruct from flat file spreadsheet
         """
         filehash = compute_filehash(filepath)
 
-        skip = check_hash(
-            engine=self.engine, filehash=filehash, filepath=filepath
-        )
+        skip = check_hash(engine=self.engine, filehash=filehash, filepath=filepath)
         if skip and not force:
             return
 
@@ -1939,9 +2053,10 @@ class Oeamdb:
         if file_type == "xlsx":
             with filepath.open(mode="rb") as f:
                 df = pl.read_excel(
-                    f, read_options={
-                    "header_row":header_row,
-                    "skip_rows":skip_rows,
+                    f,
+                    read_options={
+                        "header_row": header_row,
+                        "skip_rows": skip_rows,
                     },
                     infer_schema_length=100_000,
                     # try_parse_dates=True,
@@ -1950,9 +2065,9 @@ class Oeamdb:
             with filepath.open(mode="rb") as f:
                 df = pl.read_csv(
                     f,
-                    skip_rows=header_row, # skip rows before header: 2
+                    skip_rows=header_row,  # skip rows before header: 2
                     has_header=True,
-                    skip_rows_after_header=skip_rows, # skip rows after hdr: 4
+                    skip_rows_after_header=skip_rows,  # skip rows after hdr: 4
                     infer_schema_length=100_000,
                     # try_parse_dates=True,
                 )
@@ -1962,8 +2077,8 @@ class Oeamdb:
 
         df = df.with_columns(
             pl.coalesce(
-            pl.col("Zulassungsdatum").str.to_date("%d/%m/%Y", strict=False),
-            pl.col("Zulassungsdatum").str.to_date("%Y-%m-%d", strict=False),
+                pl.col("Zulassungsdatum").str.to_date("%d/%m/%Y", strict=False),
+                pl.col("Zulassungsdatum").str.to_date("%Y-%m-%d", strict=False),
             ).alias("Zulassungsdatum")
         )
         file_content = list(df.iter_rows(named=True))
@@ -2020,16 +2135,18 @@ class Oeamdb:
             if wirkstoff is None and inn is None:
                 return []
             cid = data["PubChem CID"]
-            return  [{
-                                "not_in_m_reason": (data["Warum nicht in M"] or "").strip() or None,
-                                "product_key": data["Zulassungsnummer"],
-                                "atc_code": (data["ATC code short"] or "").strip() or None,
-                                "vo_unit": (data["VO-Einheit"] or "").strip() or None,
-                                "name_de": wirkstoff.upper() if wirkstoff else None,
-                                "name_en": inn.upper() if inn else None,
-                                "pubchem_cid": str(cid) if cid is not None else None,
-                                "canonical_smiles": data["SMILES (Pubchem)"],
-                            }]
+            return [
+                {
+                    "not_in_m_reason": (data["Warum nicht in M"] or "").strip() or None,
+                    "product_key": data["Zulassungsnummer"],
+                    "atc_code": (data["ATC code short"] or "").strip() or None,
+                    "vo_unit": (data["VO-Einheit"] or "").strip() or None,
+                    "name_de": wirkstoff.upper() if wirkstoff else None,
+                    "name_en": inn.upper() if inn else None,
+                    "pubchem_cid": str(cid) if cid is not None else None,
+                    "canonical_smiles": data["SMILES (Pubchem)"],
+                }
+            ]
             # if code is None:
             #     return [dict(atc_code=None,**body)]
             # else:
@@ -2037,7 +2154,6 @@ class Oeamdb:
             #         dict(atc_code=c,**body)
             #         for c in code.replace(",",";").upper().split(";")
             #     ]
-
 
         def atc_processor(data):
             # if not passes_vet(data):
@@ -2047,14 +2163,15 @@ class Oeamdb:
             inn = data["INN"] if data["INN"] is not None else wirkstoff
             code_list = [data["ATC code short"]]
             if code is not None:
-                code_list += code.replace(",",";").upper().split(";")
+                code_list += code.replace(",", ";").upper().split(";")
             return [
                 {
                     "product_key": data["Zulassungsnummer"],
                     "atc_code": c.strip(" "),
                     "name_en": inn.upper() if inn else None,
                     "name_de": wirkstoff.upper() if wirkstoff else None,
-                } for c in code_list
+                }
+                for c in code_list
             ]
 
         def course_processor(df):
@@ -2066,9 +2183,7 @@ class Oeamdb:
                     if p:
                         for pp in p.split("/"):
                             if pp.strip(" \xa0"):
-                                prof_list.append(
-                                    pp.strip(" \xa0")
-                                    )
+                                prof_list.append(pp.strip(" \xa0"))
                 d["taught_by_list"] = sorted(set(prof_list))
                 d["taught_by"] = "/".join(d["taught_by_list"])
                 d["colname"] = col
@@ -2084,43 +2199,39 @@ class Oeamdb:
             inn = data["INN"] if data["INN"] is not None else wirkstoff
             courses = []
             for cr in all_courses.values():
-                if (data[cr["colname"]] is not None
-                    and
-                    data[cr["colname"]] not in (""," ","\xa0")):
+                if data[cr["colname"]] is not None and data[cr["colname"]] not in (
+                    "",
+                    " ",
+                    "\xa0",
+                ):
                     courses.append(cr)
 
             if data["ATC Code"] is not None:
-                atc_codes = [ ac.strip(" ")
-                    for ac in
-                    data["ATC Code"].replace(",",";").upper().split(";")
-                    ]
+                atc_codes = [
+                    ac.strip(" ")
+                    for ac in data["ATC Code"].replace(",", ";").upper().split(";")
+                ]
             else:
                 atc_codes = []
             ans = []
             for c in courses:
-                base = {
-                "submitted_by":data[c["colname"]],
-                **c
-                }
-                ans.append({
-                "link_type": "substance",
-                "link_id": inn.upper() if inn else None,
-                    **base
+                base = {"submitted_by": data[c["colname"]], **c}
+                ans.append(
+                    {
+                        "link_type": "substance",
+                        "link_id": inn.upper() if inn else None,
+                        **base,
                     }
-                    )
-                ans.append({
-                "link_type": "product",
-                "link_id": data["Zulassungsnummer"],
-                    **base
+                )
+                ans.append(
+                    {
+                        "link_type": "product",
+                        "link_id": data["Zulassungsnummer"],
+                        **base,
                     }
-                    )
+                )
                 for ac in atc_codes:
-                    ans.append({
-                        "link_type": "atc_code",
-                        "link_id": ac,
-                        **base
-                        }
-                        )
+                    ans.append({"link_type": "atc_code", "link_id": ac, **base})
             return ans
 
         def full_course_mat_processor(data):
@@ -2130,21 +2241,25 @@ class Oeamdb:
             inn = data["INN"] if data["INN"] is not None else wirkstoff
             courses = []
             for cr in all_courses.values():
-                if (data[cr["colname"]] is not None
-                    and
-                    data[cr["colname"]] not in (""," ","\xa0")):
+                if data[cr["colname"]] is not None and data[cr["colname"]] not in (
+                    "",
+                    " ",
+                    "\xa0",
+                ):
                     courses.append(cr)
 
             ans = []
             for c in courses:
-                ans.append({
-                "submitted_by":data[c["colname"]],
-                    "name_de": wirkstoff.upper() if wirkstoff else None,
-                    "name_en": inn.upper() if inn else None,
-                "product_key": data["Zulassungsnummer"],
-                "atc_code": data["ATC code short"],
-                **c
-                    })
+                ans.append(
+                    {
+                        "submitted_by": data[c["colname"]],
+                        "name_de": wirkstoff.upper() if wirkstoff else None,
+                        "name_en": inn.upper() if inn else None,
+                        "product_key": data["Zulassungsnummer"],
+                        "atc_code": data["ATC code short"],
+                        **c,
+                    }
+                )
             return ans
 
         importers1 = [
@@ -2377,14 +2492,14 @@ class Oeamdb:
         with self.engine.connect() as conn:
             conn.execute(
                 text(
-                """
+                    """
                         INSERT INTO course(level,title,semester,taught_by)
                         SELECT :level,:title,:semester,:taught_by
                         ON CONFLICT DO NOTHING
                         ;""",
-                    ),
+                ),
                 list(course_processor(df).values()),
-                )
+            )
             conn.commit()
 
         for importer in importers1:
@@ -2396,10 +2511,7 @@ class Oeamdb:
             importer.import_all(engine=self.engine, params=file_content)
 
         if not skip:
-            register_hash(
-                engine=self.engine, filehash=filehash, filepath=filepath
-            )
-
+            register_hash(engine=self.engine, filehash=filehash, filepath=filepath)
 
     def refresh_course_pivot(self, force=False):
         """Rebuild course_pivot if the set of courses no longer matches it.
@@ -2409,7 +2521,9 @@ class Oeamdb:
         """
         with self.engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT id, level || semester || ' ' || title AS name FROM course ORDER BY id")
+                text(
+                    "SELECT id, level || semester || ' ' || title AS name FROM course ORDER BY id"
+                )
             ).all()
 
         courses = [(int(r[0]), r[1]) for r in rows]
@@ -2423,22 +2537,18 @@ class Oeamdb:
             if current == expected:
                 return False
 
-        base_cols = [
-            "atc_code",
-            "product_id",
-            "substance_id"
-        ]
+        base_cols = ["atc_code", "product_id", "substance_id"]
         course_cols = [
-                f"(CASE WHEN course_id = {cid} THEN submitted_by END) AS course_{cid}"
-                for cid, _ in courses
-            ]
+            f"(CASE WHEN course_id = {cid} THEN submitted_by END) AS course_{cid}"
+            for cid, _ in courses
+        ]
         joined_cols = ",\n".join(base_cols + course_cols)
         ddl = (
             "CREATE VIEW course_pivot AS\n"
             "  SELECT "
             f"{joined_cols}\n"
             "  FROM course_material_full_descr\n"
-            #"  GROUP BY atc_code,product_id,"substance_id
+            # "  GROUP BY atc_code,product_id,"substance_id
         )
 
         with self.engine.begin() as conn:
@@ -2447,15 +2557,14 @@ class Oeamdb:
             conn.commit()
         return True
 
-
-    def migrate_info(self,source_engine):
+    def migrate_info(self, source_engine):
         queries = [
             {
-                "source_query":"""
+                "source_query": """
                     SELECT level,semester,title,taught_by
                     FROM course
                     ;""",
-                "target_query":"""
+                "target_query": """
                     INSERT INTO course(
                         level,
                         semester,
@@ -2471,7 +2580,7 @@ class Oeamdb:
                     ;""",
             },
             {
-                "source_query":"""
+                "source_query": """
                     SELECT p.product_key,
                         s.name_en AS substance_name,
                         cm.atc_code,
@@ -2487,7 +2596,7 @@ class Oeamdb:
                     INNER JOIN course c
                     ON c.id=cm.course_id
                     ;""",
-                "target_query":"""
+                "target_query": """
                     INSERT INTO course_material_full_descr (
                         product_id,
                         substance_id,
@@ -2514,7 +2623,7 @@ class Oeamdb:
                     ;""",
             },
             {
-                "source_query":"""
+                "source_query": """
                     SELECT p.product_key,
                         s.name_en AS substance_name,
                         cm.atc_code,
@@ -2530,7 +2639,7 @@ class Oeamdb:
                     INNER JOIN course c
                     ON c.id=cm.course_id
                     ;""",
-                "target_query":"""
+                "target_query": """
                     INSERT INTO course_material (
                         link_type,
                         link_id,
@@ -2560,12 +2669,73 @@ class Oeamdb:
                     ON CONFLICT DO NOTHING
                     ;""",
             },
+            {
+                "source_query": """
+                    SELECT p.product_key,
+                        s.name_en AS substance_name,
+                        vu.atc_code,
+                        vu.description
+                    FROM vo_unit vu
+                    INNER JOIN product p
+                    ON p.id=vu.product_id
+                    INNER JOIN substance s
+                    ON s.id=vu.substance_id
+                    ;""",
+                "target_query": """
+                    INSERT INTO vo_unit (
+                        product_id,
+                        substance_id,
+                        atc_code,
+                        description
+                        )
+                    SELECT p.id,
+                        s.id,
+                        ac.atc_code_short,
+                        :description
+                    FROM product p
+                    INNER JOIN substance s
+                    ON p.product_key=:product_key
+                    AND s.name_en=:substance_name
+                    INNER JOIN atc_code ac
+                    ON ac.atc_code=:atc_code
+                    ON CONFLICT DO NOTHING
+                    ;""",
+            },
+            {
+                "source_query": """
+                    SELECT p.product_key,
+                        s.name_en AS substance_name,
+                        nimr.atc_code,
+                        nimr.reason
+                    FROM not_in_m_reason nimr
+                    INNER JOIN product p
+                    ON p.id=nimr.product_id
+                    INNER JOIN substance s
+                    ON s.id=nimr.substance_id
+                    ;""",
+                "target_query": """
+                    INSERT INTO not_in_m_reason (
+                        product_id,
+                        substance_id,
+                        atc_code,
+                        reason
+                        )
+                    SELECT p.id,
+                        s.id,
+                        ac.atc_code_short,
+                        :reason
+                    FROM product p
+                    INNER JOIN substance s
+                    ON p.product_key=:product_key
+                    AND s.name_en=:substance_name
+                    INNER JOIN atc_code ac
+                    ON ac.atc_code=:atc_code
+                    ON CONFLICT DO NOTHING
+                    ;""",
+            },
         ]
-        with (source_engine.connect() as s_conn,
-            self.engine.connect() as conn):
+        with source_engine.connect() as s_conn, self.engine.connect() as conn:
             for query in queries:
-                data = s_conn.execute(
-                    text(query["source_query"])
-                    ).mappings().all()
-                conn.execute(text(query["target_query"]),data)
+                data = s_conn.execute(text(query["source_query"])).mappings().all()
+                conn.execute(text(query["target_query"]), data)
             conn.commit()
