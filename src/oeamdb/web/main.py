@@ -176,7 +176,7 @@ def spreadsheet(
     session: Session = Depends(get_session),
     fmt: Literal["csv", "json"] = Query("csv", alias="format"),
     download: bool = True,
-    schema: Literal["public","oeamdb_2025","oeamdb_2026"] = Query("public", alias="schema"),
+    schema: Literal["public","oeamdb_2025","oeamdb_2026"] = Query("oeamdb_2026", alias="schema"),
     ):
     rows = session.execute(text("""
         SELECT DISTINCT
