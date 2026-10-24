@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Database schema</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #fff; color: #111; }
+  @media (prefers-color-scheme: dark) { body { background: #16181c; color: #e8e8e8; } }
+  h1 { font-size: 1.1rem; margin: 0; padding: 12px 16px; }
+  .wrap { overflow: auto; padding: 0 16px 16px; }
+  pre.mermaid { margin: 0; }
+</style>
+</head>
+<body>
+<h1>Database schema</h1>
+<div class="wrap"><pre class="mermaid">
+{{ diagram }}
+</pre></div>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@{{ mermaid_version }}/dist/mermaid.esm.min.mjs";
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: "strict",
+    theme: dark ? "dark" : "default",
+    er: { useMaxWidth: false },
+  });
+</script>
+</body>
+</html>
