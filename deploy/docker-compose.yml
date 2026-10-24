@@ -117,7 +117,6 @@ services:
       - "${OEAMDB_WEB_API_BIND_HTTPS}:443"
       - "${OEAMDB_WEB_API_BIND_HTTPS}:443/udp"   # HTTP/3
       - "${OEAMDB_WEB_API_BIND_HTTP}:80"
-      - "${OEAMDB_WEB_API_BIND_HTTP}:80/udp"   # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${OEAMDB_TLS_KEY}:/certs/privkey.pem:ro

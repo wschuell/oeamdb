@@ -295,7 +295,7 @@ class Oeamdb:
         engine_url: str = "sqlite:///oeamdb.db",
         engine=None,
         data_folder: "str | Path | None" = None,
-        filter_vet: bool = True,
+        filter_vet: bool = False,
         enforce_data_check: bool = True,
         doc_types: "dict | None" = None,
         chembl_engine=None,
@@ -654,6 +654,7 @@ class Oeamdb:
             ]
 
         def param_processor(data):
+            assert data["Typ"] in ("Arzneispezialität","Wartezeit","Zieltierart")
             processed_data = {
                 "approval_date": data["Zulassungsdatum"],
                 "product_key": data["Zulassungsnummer"],
@@ -663,9 +664,12 @@ class Oeamdb:
                 "vet_usage": data["Verwendung"] == "Veterinär",
                 "category": data["Arzneimittelkategorie"],
                 "raw_info": data,
+                "extra_vet_info":data["Typ"] != "Arzneispezialität"
             }
 
             if self.filter_vet and not processed_data["human_usage"]:
+                return []
+            elif processed_data["extra_vet_info"]:
                 return []
             else:
                 return [processed_data]
@@ -2095,10 +2099,10 @@ class Oeamdb:
             return [
                 {
                     "product_key": data["Zulassungsnummer"],
-                    "atc_code": data["ATC Code"] or data["ATC code short"],
+                    "atc_code": (data["ATC Code"] or data["ATC code short"]).upper(),
                     "approval_date": approval_date,
-                    "human_usage": data["Verwendung"] == "Human",
-                    "vet_usage": data["Verwendung"] == "Veterin\u00e4r",
+                    "human_usage": "Human" in data["Verwendung"],
+                    "vet_usage": "Veterin\u00e4r" in data["Verwendung"],
                     "orig_category": data["orig_Arzneimittelkategorie"],
                     "category": (
                         data["Arzneimittelkategorie"]
@@ -2139,8 +2143,10 @@ class Oeamdb:
                 {
                     "not_in_m_reason": (data["Warum nicht in M"] or "").strip() or None,
                     "product_key": data["Zulassungsnummer"],
-                    "atc_code": (data["ATC code short"] or "").strip() or None,
-                    "vo_unit": (data["VO-Einheit"] or "").strip() or None,
+                    "atc_code": (data["ATC code short"] or "").strip().upper(),
+                    "vo_unit": (data["VO-Einheit"] or "").strip(),
+                    "manual_entry": ((data["Manueller Eintrag?"] or "").strip().lower() == "ja"),
+                    "disapproval_date": (data["Nicht mehr in AT zugelassen"] or "").strip() or None,
                     "name_de": wirkstoff.upper() if wirkstoff else None,
                     "name_en": inn.upper() if inn else None,
                     "pubchem_cid": str(cid) if cid is not None else None,
@@ -2161,13 +2167,13 @@ class Oeamdb:
             code = data["ATC Code"]
             wirkstoff = data["Wirkstoff_SplitResultList"]
             inn = data["INN"] if data["INN"] is not None else wirkstoff
-            code_list = [data["ATC code short"]]
+            code_list = [data["ATC code short"].upper()]
             if code is not None:
                 code_list += code.replace(",", ";").upper().split(";")
             return [
                 {
                     "product_key": data["Zulassungsnummer"],
-                    "atc_code": c.strip(" "),
+                    "atc_code": c.strip(" ").upper(),
                     "name_en": inn.upper() if inn else None,
                     "name_de": wirkstoff.upper() if wirkstoff else None,
                 }
@@ -2206,13 +2212,13 @@ class Oeamdb:
                 ):
                     courses.append(cr)
 
-            if data["ATC Code"] is not None:
-                atc_codes = [
-                    ac.strip(" ")
-                    for ac in data["ATC Code"].replace(",", ";").upper().split(";")
-                ]
-            else:
-                atc_codes = []
+            # if data["ATC Code"] is not None:
+            #     atc_codes = [
+            #         ac.strip(" ")
+            #         for ac in data["ATC Code"].replace(",", ";").upper().split(";")
+            #     ] + data["ATC code short"].upper()
+            # else:
+            atc_codes = [data["ATC code short"].upper()]
             ans = []
             for c in courses:
                 base = {"submitted_by": data[c["colname"]], **c}
@@ -2256,7 +2262,7 @@ class Oeamdb:
                         "name_de": wirkstoff.upper() if wirkstoff else None,
                         "name_en": inn.upper() if inn else None,
                         "product_key": data["Zulassungsnummer"],
-                        "atc_code": data["ATC code short"],
+                        "atc_code": data["ATC code short"].upper(),
                         **c,
                     }
                 )
@@ -2486,6 +2492,36 @@ class Oeamdb:
                 param_processor=global_attr_processor,
                 param_split=True,
             ),
+            Importer(
+                query="""
+                        INSERT INTO manual_entry(
+                            substance_id,
+                            atc_code,
+                            product_id,
+                            value)
+                        SELECT s.id,
+                        (SELECT atc_code_short FROM atc_code
+                            WHERE atc_code=:atc_code),
+                        (SELECT id FROM product p
+                            WHERE p.product_key=:product_key),
+                        CAST(:manual_entry AS BOOL)
+                        FROM substance s
+                        WHERE s.name_en=:name_en
+                        AND CAST(:manual_entry AS BOOL) IS NOT NULL
+                        ON CONFLICT DO NOTHING
+                        ;""",
+                param_processor=global_attr_processor,
+                param_split=True,
+            ),
+            Importer(
+                query="""
+                        UPDATE product
+                        SET disapproval_date=:disapproval_date
+                        WHERE product_key=:product_key AND disapproval_date IS NULL
+                        ;""",
+                param_processor=global_attr_processor,
+                param_split=True,
+            ),
         ]
 
         # course
@@ -2692,6 +2728,38 @@ class Oeamdb:
                         s.id,
                         ac.atc_code_short,
                         :description
+                    FROM product p
+                    INNER JOIN substance s
+                    ON p.product_key=:product_key
+                    AND s.name_en=:substance_name
+                    INNER JOIN atc_code ac
+                    ON ac.atc_code=:atc_code
+                    ON CONFLICT DO NOTHING
+                    ;""",
+            },
+            {
+                "source_query": """
+                    SELECT p.product_key,
+                        s.name_en AS substance_name,
+                        me.atc_code,
+                        me.value
+                    FROM manual_entry me
+                    INNER JOIN product p
+                    ON p.id=me.product_id
+                    INNER JOIN substance s
+                    ON s.id=me.substance_id
+                    ;""",
+                "target_query": """
+                    INSERT INTO manual_entry (
+                        product_id,
+                        substance_id,
+                        atc_code,
+                        value
+                        )
+                    SELECT p.id,
+                        s.id,
+                        ac.atc_code_short,
+                        :value
                     FROM product p
                     INNER JOIN substance s
                     ON p.product_key=:product_key

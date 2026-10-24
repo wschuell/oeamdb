@@ -87,6 +87,7 @@ class Product(Base):
     orig_category = Column(String)
     category = Column(String)
     approval_date = Column(Date)
+    disapproval_date = Column(String) # Column(Date)
     atc_code = Column(String)
     raw_info = Column(JSON().with_variant(JSONB, "postgresql"))
 
@@ -366,6 +367,19 @@ class VOUnit(Base):
     product_id = Column(ForeignKey(Product.id), primary_key=True)
     substance_id = Column(ForeignKey(Substance.id), primary_key=True)
     atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
+
+class ManualEntry(Base):
+    """
+    ManualEntry class
+    """
+
+    __tablename__ = "manual_entry"
+    inserted_at = Column(DateTime, server_default=func.current_timestamp())
+    updated_at = Column(DateTime, server_default=func.current_timestamp())
+    product_id = Column(ForeignKey(Product.id), primary_key=True)
+    substance_id = Column(ForeignKey(Substance.id), primary_key=True)
+    atc_code = Column(ForeignKey(ATCCode.atc_code), primary_key=True)
+    value = Column(Boolean)
 
 class NotInMReason(Base):
     """

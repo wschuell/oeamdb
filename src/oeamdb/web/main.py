@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 import oeamdb
 import os
 from pathlib import Path
+from operator import itemgetter
 
 from sqlalchemy import URL
 
@@ -17,9 +18,12 @@ from typing import Literal
 
 from dataclasses import dataclass, field
  
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
+from fastapi.encoders import jsonable_encoder
+
+from . import schemas
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
@@ -94,12 +98,14 @@ app = FastAPI(
             version=oeamdb.__version__,
             description="Database for Austrian approved medication and usage in University courses.")
 
+app.include_router(schemas.router)
+
 def get_session(request: Request):
     with request.app.state.sessionmaker() as session:
         yield session
 
-@app.get("/results")
-def results(session: Session = Depends(get_session)):
+@app.get("/table_contents")
+def table_contents(session: Session = Depends(get_session)):
     rows = session.execute(
         text("SELECT * FROM substance;"),
     ).mappings().all()
@@ -178,18 +184,51 @@ def spreadsheet(
     download: bool = True,
     schema: Literal["public","oeamdb_2025","oeamdb_2026"] = Query("oeamdb_2026", alias="schema"),
     ):
+    course_info = session.execute(text("""
+        SELECT id,level||semester||' '||title AS colname
+        FROM course
+        ORDER BY colname
+        ;""")).mappings().all()
     rows = session.execute(text("""
         SELECT DISTINCT
-            DATE_PART('year', p.approval_date) = 2026 AS new_in_2026,
-            DATE_PART('year', p.approval_date) = 2025 AS new_in_2025,
+            CASE WHEN
+                DATE_PART('year', p.approval_date) = 2026
+                THEN 'X'
+                ELSE ''
+            END
+                AS new_in_2026,
+            CASE WHEN
+                DATE_PART('year', p.approval_date) = 2025
+                THEN 'X'
+                ELSE ''
+            END
+                AS new_in_2025,
+            CASE WHEN
+               p.approval_date > '2025-05-19'::date
+                THEN 'X'
+                ELSE ''
+            END
+                AS new_since_lastyear,
+            DATE_PART('year', p.approval_date) = 2026 AS new_in_2026_bool,
+            DATE_PART('year', p.approval_date) = 2025 AS new_in_2025_bool,
+            p.approval_date > '2025-05-19'::date AS new_since_lastyear_bool,
+            p.disapproval_date AS disapproved_since,
+            CASE WHEN
+               me.value
+                THEN 'X'
+                ELSE ''
+            END
+                AS manual_entry,
+            me.value AS manual_entry_bool,
             p.product_key,
             vu.description AS vo_unit,
             nimr.reason AS not_in_m_reason,
             p.category,
             p.orig_category,
-            DATE_PART('year', p.approval_date) AS approval_year,
+            DATE_PART('year', p.approval_date)::integer AS approval_year,
             p.approval_date ,
             s.name_en AS substance_name_english,
+            s.name_de AS substance_name_deutsch,
             s.chembl_id ,
             s.pubchem_cid ,
             STRING_AGG(ac.atc_code, ';') OVER (
@@ -197,8 +236,20 @@ def spreadsheet(
                 ORDER BY ac.atc_code
                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
                 AS atc_codes,
-            p.human_usage,
-            p.vet_usage,
+            p.human_usage AS human_usage_bool,
+            p.vet_usage AS vet_usage_bool,
+            CASE WHEN
+               p.human_usage
+                THEN 'H'
+                ELSE ''
+            END
+                AS human_usage,
+            CASE WHEN
+               p.vet_usage
+                THEN 'V'
+                ELSE ''
+            END
+                AS vet_usage,
             ac.atc_code_short,
             s.canonical_smiles,
             cm.*
@@ -226,20 +277,68 @@ def spreadsheet(
         ON p.id=nimr.product_id
         AND s.id=nimr.substance_id
         AND ac.atc_code_short=nimr.atc_code
+        LEFT OUTER JOIN manual_entry me
+        ON p.id=me.product_id
+        AND s.id=me.substance_id
+        AND ac.atc_code_short=me.atc_code
         ;"""))
 
+    course_dict = {f"course_{ci['id']}":ci["colname"] for ci in course_info}
+    columns = {
+"new_in_2026":"Neues Arzneimittel bzw. neue Indikation 2026",
+"new_in_2025":"Neues Arzneimittel bzw. neue Indikation 2025",
+"new_since_lastyear":"Neues Arzneimittel (seit letzstes Spreadsheets)",
+"disapproval_date":"Nicht mehr in AT zugelassen",
+"manual_entry":"Manueller Eintrag?",
+        **course_dict,
+"vo_unit":"VO-Einheit",
+"not_in_m_reason":"Warum nicht in M",
+"category":"Arzneimittelkategorie",
+"substance_name_english":"Wirkstoff Englisch",
+"substance_name_deutsch":"Wirkstoff Deutsch",
+"orig_category":"orig_Arzneimittelkategorie",
+"approval_year":"Zulassungsjahr",
+"product_key":"Zulassungsnummer",
+"approval_date":"Zulassungsdatum",
+"atc_codes":"ATC Code",
+"human_usage":"Verwendung Human",
+"vet_usage":"Verwendung Vet",
+# "":"orig_Wirkstoff_SplitResultList",
+"atc_code_short":"ATC code short",
+# "":"INN",
+"pubchem_cid":"PubChem CID",
+"chembl_id":"Chembl ID",
+# "":"SMILES (Pubchem)",
+"canonical_smiles":"cleaned SMILES",
+    }
+
+    src_cols, out_cols = list(columns), list(columns.values())
+    process_row = itemgetter(*src_cols)
+
+    data = [process_row(m) for m in rows.mappings()]
+    if len(src_cols) == 1:
+        data = [(v,) for v in data]
+
+
+    headers = (
+        {"Content-Disposition": f'attachment; filename="spreadsheet.{fmt}"'}
+        if download else None
+    )
+
     if fmt == "json":
-        return rows.mappings().all()
+        return JSONResponse(
+            content=jsonable_encoder(
+                [dict(zip(out_cols, r, strict=True)) for r in data]
+                ),
+            headers=headers,
+        )
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(rows.keys())
-    writer.writerows(rows)
-    if download:
-        return Response(
-            content=buf.getvalue(),
-            media_type="text/csv",
-            headers={"Content-Disposition": 'attachment; filename="spreadsheet.csv"'},
-        )
-
-    return PlainTextResponse(buf.getvalue())
+    writer.writerow(out_cols)
+    writer.writerows(data)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv" if download else "text/plain",
+        headers=headers,
+    )

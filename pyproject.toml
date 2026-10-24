@@ -34,6 +34,7 @@ dependencies = [
     "geopy",
     "beautifulsoup4",
     "requests",
+    "pymupdf",
     "pymupdf4llm",
     "fastexcel",
     "chembl-downloader",
@@ -70,6 +71,7 @@ web = [
     "fastapi",
     "uvicorn[standard]",
     "psycopg",
+    "pygraphviz",
 ]
 
 [project.urls]

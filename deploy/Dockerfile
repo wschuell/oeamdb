@@ -16,7 +16,7 @@ FROM python:3.13-slim
 RUN useradd --create-home --uid 10001 app
 
 RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+    graphviz fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /app /app
