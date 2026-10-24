@@ -310,6 +310,8 @@ class Oeamdb:
         chembl_download: bool = False,
         chembl_version: int | None = None,
         connect_args: dict | None = None,
+        include_pubchem: bool=True,
+        include_docs: bool=True,
     ):
         self.engine_url = engine_url
         self.connect_args = connect_args or {}
@@ -348,6 +350,8 @@ class Oeamdb:
             self.workers = max(1, mp.cpu_count() - 1)
         else:
             self.workers = workers
+        self.include_pubchem = include_pubchem
+        self.include_docs = include_docs
 
     def get_stats(self, commit=True):
         ans = collect_stats(engine=self.engine)
@@ -408,12 +412,14 @@ class Oeamdb:
             after_boundary=after_boundary,
         )
         self.geolocate()
-        self.resolve_docs()
+        if self.include_docs:
+            self.resolve_docs()
         self.get_chembl_atc_info()
         self.get_chembl_mol_info()
         self.resolve_chembl()
         self.get_chembl_mol_atc()
-        self.resolve_pubchem()
+        if self.include_pubchem:
+            self.resolve_pubchem()
         self.get_atc_corrections()
         self.get_atc_corrections(
             filepath=Path(__file__).parent / "data" / "atc_corr.json"
@@ -1947,6 +1953,7 @@ class Oeamdb:
                                     :product_key,
                                     :download_success,
                                     :corrupted_pdf
+                                WHERE NOT EXISTS (SELECT 1 FROM document WHERE url=:url)
                                         ;""",
                             doc_data,
                         )
