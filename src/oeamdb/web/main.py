@@ -212,7 +212,7 @@ def spreadsheet(
             DATE_PART('year', p.approval_date) = 2026 AS new_in_2026_bool,
             DATE_PART('year', p.approval_date) = 2025 AS new_in_2025_bool,
             p.approval_date > '2025-05-19'::date AS new_since_lastyear_bool,
-            p.disapproval_date AS disapproved_since,
+            p.disapproval_date AS disapproval_date,
             CASE WHEN
                me.value
                 THEN 'X'
