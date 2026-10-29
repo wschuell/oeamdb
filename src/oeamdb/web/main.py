@@ -184,6 +184,13 @@ def spreadsheet(
     download: bool = True,
     schema: Literal["public","oeamdb_2025","oeamdb_2026"] = Query("oeamdb_2026", alias="schema"),
     ):
+    session.execute(
+        text("SELECT set_config('search_path', :sp, true)"),
+        # {"sp": f"{schema}, public"},
+        {"sp": schema},
+    )
+    schema_set = session.execute(text("SELECT current_setting('search_path')")).scalar_one()
+    assert schema_set == schema
     course_info = session.execute(text("""
         SELECT id,level||semester||' '||title AS colname
         FROM course
